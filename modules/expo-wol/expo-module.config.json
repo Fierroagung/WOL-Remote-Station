@@ -1,0 +1,10 @@
+{
+  "name": "expo-wol",
+  "platforms": ["ios", "android"],
+  "android": {
+    "modules": ["expo.modules.wol.ExpoWolModule"]
+  },
+  "ios": {
+    "modules": ["ExpoWolModule"]
+  }
+}

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   StyleSheet,
   View,
@@ -11,7 +11,7 @@ import {
   Platform,
 } from 'react-native';
 import { CyberColors } from '../theme/colors';
-import { StationConfig } from '../services/mqttService';
+import { StationConfig, sanitizeBrokerUrl, DEFAULT_BROKER_WS } from '../services/mqttService';
 
 interface SettingsModalProps {
   visible: boolean;
@@ -26,24 +26,54 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   config,
   onSave,
 }) => {
-  const [stationName, setStationName] = useState(config.stationName);
-  const [stationKey, setStationKey] = useState(config.stationKey);
-  const [macAddress, setMacAddress] = useState(config.macAddress);
-  const [broadcastIp, setBroadcastIp] = useState(config.broadcastIp);
-  const [brokerUrl, setBrokerUrl] = useState(config.brokerUrl);
+  const [stationName, setStationName] = useState(config.stationName || '');
+  const [stationKey, setStationKey] = useState(config.stationKey || '');
+  const [macAddress, setMacAddress] = useState(config.macAddress || '');
+  const [broadcastIp, setBroadcastIp] = useState(config.broadcastIp || '');
+  const [brokerUrl, setBrokerUrl] = useState(config.brokerUrl || '');
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Sync saat modal dibuka
+  useEffect(() => {
+    if (visible) {
+      setStationName(config.stationName || '');
+      setStationKey(config.stationKey || '');
+      setMacAddress(config.macAddress || '');
+      setBroadcastIp(config.broadcastIp || '');
+      setBrokerUrl(config.brokerUrl || '');
+      setErrorMessage(null);
+    }
+  }, [visible, config]);
 
   const handleGenerateKey = () => {
-    const randomHex = Math.random().toString(36).substring(2, 7).toUpperCase();
-    setStationKey(`WOL-${randomHex}-PC`);
+    const chars = Math.random().toString(36).substring(2, 6).toUpperCase();
+    const newKey = `WOL-${chars}-PC`;
+    setStationKey(newKey);
+    setErrorMessage(null);
   };
 
   const handleSave = () => {
+    const trimmedKey = stationKey.trim();
+    const trimmedMac = macAddress.trim();
+
+    if (!trimmedKey) {
+      setErrorMessage('Station Pairing Key tidak boleh kosong!');
+      return;
+    }
+    if (!trimmedMac) {
+      setErrorMessage('MAC Address LAN PC tidak boleh kosong!');
+      return;
+    }
+
+    // Normalisasi Broker URL dengan aman (Mencegah crash native Android)
+    const sanitizedBroker = sanitizeBrokerUrl(brokerUrl);
+
     onSave({
       stationName: stationName.trim() || 'My PC',
-      stationKey: stationKey.trim() || 'WOL-DEFAULT-PC',
-      macAddress: macAddress.trim() || 'A4:83:E7:2B:10:9C',
-      broadcastIp: broadcastIp.trim() || '192.168.1.255',
-      brokerUrl: brokerUrl.trim() || 'wss://broker.hivemq.com:8884/mqtt',
+      stationKey: trimmedKey,
+      macAddress: trimmedMac.toUpperCase(),
+      broadcastIp: broadcastIp.trim() || '192.168.0.255',
+      brokerUrl: sanitizedBroker,
     });
     onClose();
   };
@@ -66,10 +96,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </TouchableOpacity>
           </View>
 
+          {/* Validation Error Message */}
+          {errorMessage && (
+            <View style={styles.errorBox}>
+              <Text style={styles.errorIcon}>⚠️</Text>
+              <Text style={styles.errorText}>{errorMessage}</Text>
+            </View>
+          )}
+
           <ScrollView style={styles.formScroll} showsVerticalScrollIndicator={false}>
             <Text style={styles.helpText}>
-              Sesuaikan dengan nomor identitas komputer Anda. Kode ini yang menghubungkan HP Anda
-              ke PC Windows secara universal dari mana saja.
+              Masukkan nomor identitas komputer Anda yang tertera di script PC Companion. Kode ini
+              yang menghubungkan HP Anda ke PC secara universal dari mana saja.
             </Text>
 
             {/* Input: Nama Komputer */}
@@ -78,9 +116,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <TextInput
                 style={styles.textInput}
                 value={stationName}
-                onChangeText={setStationName}
+                onChangeText={(t) => {
+                  setStationName(t);
+                  setErrorMessage(null);
+                }}
                 placeholder="Contoh: Rig Gaming, PC Kantor"
-                placeholderTextColor="#64748b"
+                placeholderTextColor="#475569"
               />
             </View>
 
@@ -95,13 +136,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <TextInput
                 style={[styles.textInput, styles.monoInput, { color: CyberColors.neonCyan }]}
                 value={stationKey}
-                onChangeText={setStationKey}
-                placeholder="Contoh: WOL-9341-PC"
-                placeholderTextColor="#64748b"
+                onChangeText={(t) => {
+                  setStationKey(t);
+                  setErrorMessage(null);
+                }}
+                placeholder="Contoh: WOL-9341-PC (Lihat di PC)"
+                placeholderTextColor="#475569"
                 autoCapitalize="characters"
+                autoCorrect={false}
               />
               <Text style={styles.inputHint}>
-                Kode ini harus sama dengan yang tertera di script PC Windows Anda.
+                Wajib sama persis dengan yang tertera di script PC Windows Anda.
               </Text>
             </View>
 
@@ -111,13 +156,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <TextInput
                 style={[styles.textInput, styles.monoInput]}
                 value={macAddress}
-                onChangeText={setMacAddress}
-                placeholder="Contoh: A4:83:E7:2B:10:9C"
-                placeholderTextColor="#64748b"
+                onChangeText={(t) => {
+                  setMacAddress(t);
+                  setErrorMessage(null);
+                }}
+                placeholder="Contoh: F0:2F:74:8B:F6:43"
+                placeholderTextColor="#475569"
                 autoCapitalize="characters"
+                autoCorrect={false}
               />
               <Text style={styles.inputHint}>
-                Didapatkan via command prompt di PC: <Text style={{ color: '#94a3b8' }}>getmac /v</Text>
+                Didapatkan via Command Prompt di PC: <Text style={{ color: '#94a3b8' }}>getmac /v</Text>
               </Text>
             </View>
 
@@ -127,10 +176,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <TextInput
                 style={[styles.textInput, styles.monoInput]}
                 value={broadcastIp}
-                onChangeText={setBroadcastIp}
-                placeholder="192.168.1.255"
-                placeholderTextColor="#64748b"
+                onChangeText={(t) => {
+                  setBroadcastIp(t);
+                  setErrorMessage(null);
+                }}
+                placeholder="Contoh: 192.168.0.255"
+                placeholderTextColor="#475569"
+                keyboardType="numbers-and-punctuation"
+                autoCorrect={false}
               />
+              <Text style={styles.inputHint}>
+                Alamat broadcast jaringan lokal Wi-Fi rumah (biasanya 192.168.0.255 atau 192.168.1.255).
+              </Text>
             </View>
 
             {/* Input: Cloud MQTT Broker */}
@@ -139,10 +196,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <TextInput
                 style={[styles.textInput, styles.monoInput]}
                 value={brokerUrl}
-                onChangeText={setBrokerUrl}
-                placeholder="wss://broker.hivemq.com:8884/mqtt"
-                placeholderTextColor="#64748b"
+                onChangeText={(t) => {
+                  setBrokerUrl(t);
+                  setErrorMessage(null);
+                }}
+                placeholder="Default: broker.hivemq.com (Port WebSocket 8884)"
+                placeholderTextColor="#475569"
+                autoCapitalize="none"
+                autoCorrect={false}
               />
+              <Text style={styles.inputHint}>
+                Bisa dikosongkan. Otomatis dialihkan ke port WebSocket aman (8884) agar sinkron dengan port 1883 di PC.
+              </Text>
             </View>
           </ScrollView>
 
@@ -210,6 +275,27 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: 'bold',
   },
+  errorBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderWidth: 1,
+    borderColor: '#ef4444',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    marginBottom: 14,
+    gap: 8,
+  },
+  errorIcon: {
+    fontSize: 14,
+  },
+  errorText: {
+    color: '#fca5a5',
+    fontSize: 12,
+    fontWeight: '600',
+    flex: 1,
+  },
   formScroll: {
     marginBottom: 16,
   },
@@ -256,6 +342,7 @@ const styles = StyleSheet.create({
     color: '#64748b',
     fontSize: 9,
     marginTop: 4,
+    lineHeight: 13,
   },
   modalFooter: {
     flexDirection: 'row',

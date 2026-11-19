@@ -26,6 +26,12 @@ export const StatusCard: React.FC<StatusCardProps> = ({ status, activeTransition
     else if (activeTransition === 'sleep') displayStatus = 'SUSPENDING...';
     else if (activeTransition === 'hibernate') displayStatus = 'SAVING TO SSD...';
     else if (activeTransition === 'restart') displayStatus = 'RESTARTING...';
+  } else if (status === 'UNCONFIGURED') {
+    dotColor = '#eab308';
+    badgeBg = 'rgba(234, 179, 8, 0.12)';
+    badgeBorder = 'rgba(234, 179, 8, 0.4)';
+    textColor = '#fde047';
+    displayStatus = 'BELUM DISET';
   } else if (status === 'ONLINE') {
     dotColor = CyberColors.online;
     badgeBg = CyberColors.onlineBg;

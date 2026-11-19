@@ -115,6 +115,10 @@ export const CyberMasterCircle: React.FC<CyberMasterCircleProps> = ({
     btnBgColor = '#b45309';
     ringBorderColor = CyberColors.restartAmber;
     auraBgColor = 'rgba(245, 158, 11, 0.3)';
+  } else if (pcStatus === 'UNCONFIGURED') {
+    btnBgColor = '#334155';
+    ringBorderColor = '#94a3b8';
+    auraBgColor = 'rgba(148, 163, 184, 0.2)';
   } else if (pcStatus === 'ONLINE') {
     btnBgColor = '#065f46';
     ringBorderColor = CyberColors.online;
@@ -188,12 +192,20 @@ export const CyberMasterCircle: React.FC<CyberMasterCircleProps> = ({
             </View>
           ) : (
             <View style={styles.centerContent}>
-              <Text style={styles.boltIcon}>⚡</Text>
+              <Text style={styles.boltIcon}>{pcStatus === 'UNCONFIGURED' ? '⚙️' : '⚡'}</Text>
               <Text style={styles.mainTitle}>
-                {pcStatus === 'ONLINE' ? 'KOMPUTER AKTIF' : 'WAKE UP'}
+                {pcStatus === 'UNCONFIGURED'
+                  ? 'SETUP PC'
+                  : pcStatus === 'ONLINE'
+                  ? 'KOMPUTER AKTIF'
+                  : 'WAKE UP'}
               </Text>
               <Text style={styles.mainSub}>
-                {pcStatus === 'ONLINE' ? 'READY' : 'MAGIC PACKET'}
+                {pcStatus === 'UNCONFIGURED'
+                  ? 'PENGATURAN'
+                  : pcStatus === 'ONLINE'
+                  ? 'READY'
+                  : 'MAGIC PACKET'}
               </Text>
             </View>
           )}
