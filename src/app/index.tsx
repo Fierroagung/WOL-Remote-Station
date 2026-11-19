@@ -78,6 +78,14 @@ export default function HomeScreen() {
     ]).start(() => setToastMessage(null));
   };
 
+  // Refs for persistent event listeners without teardown
+  const roleRef = useRef<AppRole>(role);
+  roleRef.current = role;
+  const isBridgeRunningRef = useRef<boolean>(isBridgeRunning);
+  isBridgeRunningRef.current = isBridgeRunning;
+  const stationConfigRef = useRef<StationConfig>(stationConfig);
+  stationConfigRef.current = stationConfig;
+
   useEffect(() => {
     // 1. Muat konfigurasi tersimpan dari storage
     const loadStoredConfig = async () => {
@@ -88,7 +96,6 @@ export default function HomeScreen() {
           if (parsed && parsed.stationKey && parsed.stationKey.trim().length > 0) {
             setStationConfig(parsed);
             mqttClient.updateConfig(parsed);
-            setPcStatus('OFFLINE');
           } else {
             setPcStatus('UNCONFIGURED');
           }
@@ -141,24 +148,23 @@ export default function HomeScreen() {
 
     // 5. Listener Sinyal Wake (Khusus Mode Bridge)
     const unsubWake = mqttClient.onWakeReceived(async (wakeData) => {
-      if (role === 'bridge' && isBridgeRunning) {
+      if (roleRef.current === 'bridge' && isBridgeRunningRef.current) {
         setLogs((prev) => [
           `[WAKE RELAY] Sinyal diterima dari HP Remote. Memancarkan Magic Packet ke ${wakeData.broadcastIp || '255.255.255.255'}...`,
           ...prev.slice(0, 19),
         ]);
 
-        const sent = await WOLService.sendMagicPacket(
-          wakeData.targetMac || stationConfig.macAddress,
-          wakeData.broadcastIp || stationConfig.broadcastIp,
-          9
-        );
+        const targetMac = wakeData.targetMac || stationConfigRef.current.macAddress;
+        const targetBroadcast = wakeData.broadcastIp || stationConfigRef.current.broadcastIp;
+
+        const sent = await WOLService.sendMagicPacket(targetMac, targetBroadcast, 9);
 
         if (sent) {
           setLogs((prev) => [
             `[WAKE SUKSES] 102-byte Magic Packet berhasil ditransmisikan ke LAN!`,
             ...prev.slice(0, 19),
           ]);
-          triggerToast('Magic Packet Diteruskan', `Sinyal bangun ditransmisikan ke kabel LAN PC (${wakeData.targetMac}).`, 'info');
+          triggerToast('Magic Packet Diteruskan', `Sinyal bangun ditransmisikan ke kabel LAN PC (${targetMac}).`, 'info');
         } else {
           setLogs((prev) => [
             `[WAKE ERROR] Gagal mengirim paket native UDP. Pastikan izin jaringan aktif.`,
@@ -176,7 +182,7 @@ export default function HomeScreen() {
       if (actionTimeoutRef.current) clearTimeout(actionTimeoutRef.current);
       if (wakeTimeoutRef.current) clearTimeout(wakeTimeoutRef.current);
     };
-  }, [role, isBridgeRunning, stationConfig]);
+  }, []);
 
   const handleSaveConfig = async (newConfig: StationConfig) => {
     setStationConfig(newConfig);

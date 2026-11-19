@@ -260,6 +260,21 @@ class MQTTService {
     this.setConnected(false);
   }
 
+  private sendPacket(packet: Uint8Array): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    try {
+      this.ws.send(packet);
+      return true;
+    } catch {
+      try {
+        this.ws.send(packet.buffer);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  }
+
   public connect() {
     if (!this.isConfigured()) {
       this.addLog('[MQTT] Konfigurasi stasiun masih kosong. Menunggu input di menu ⚙️ Pengaturan...');
@@ -279,25 +294,63 @@ class MQTTService {
         const clientId = `wol_app_${Math.random().toString(16).substring(2, 10)}`;
         try {
           const connectPacket = buildConnectPacket(clientId);
-          this.ws?.send(connectPacket.buffer);
+          this.sendPacket(connectPacket);
         } catch (err) {
           this.addLog(`[MQTT Handshake Error] ${String(err)}`);
         }
       };
 
-      this.ws.onmessage = (event) => {
+      this.ws.onmessage = async (event) => {
         try {
           const raw = event.data;
-          let bytes: Uint8Array;
+          let bytes: Uint8Array | null = null;
+
           if (raw instanceof ArrayBuffer) {
             bytes = new Uint8Array(raw);
           } else if (ArrayBuffer.isView(raw)) {
             bytes = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
-          } else {
-            return;
+          } else if (typeof Blob !== 'undefined' && raw instanceof Blob) {
+            // Android React Native OkHttp delivers WebSocket binary frames as Blob
+            if (typeof (raw as any).arrayBuffer === 'function') {
+              try {
+                const buf = await (raw as any).arrayBuffer();
+                bytes = new Uint8Array(buf);
+              } catch {}
+            }
+            if (!bytes && typeof FileReader !== 'undefined') {
+              bytes = await new Promise<Uint8Array | null>((resolve) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                  if (reader.result instanceof ArrayBuffer) {
+                    resolve(new Uint8Array(reader.result));
+                  } else {
+                    resolve(null);
+                  }
+                };
+                reader.onerror = () => resolve(null);
+                reader.readAsArrayBuffer(raw);
+              });
+            }
+          } else if (typeof raw === 'string') {
+            // Coba decode base64 jika ada
+            try {
+              if (typeof atob === 'function') {
+                const binStr = atob(raw);
+                const b = new Uint8Array(binStr.length);
+                for (let i = 0; i < binStr.length; i++) {
+                  b[i] = binStr.charCodeAt(i);
+                }
+                if (b.length >= 2 && ((b[0] >> 4) === 2 || (b[0] >> 4) === 3)) {
+                  bytes = b;
+                }
+              }
+            } catch {}
+            if (!bytes) {
+              bytes = encodeUtf8(raw);
+            }
           }
 
-          if (bytes.length < 2) return;
+          if (!bytes || bytes.length < 2) return;
           const packetType = bytes[0] >> 4;
 
           // 1. CONNACK (Type 2)
@@ -310,11 +363,7 @@ class MQTTService {
               // Mulai PING interval (30 detik)
               if (this.pingInterval) clearInterval(this.pingInterval);
               this.pingInterval = setInterval(() => {
-                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                  try {
-                    this.ws.send(buildPingPacket().buffer);
-                  } catch {}
-                }
+                this.sendPacket(buildPingPacket());
               }, 30000);
 
               // Subscribe ke Status PC & Wake Commands
@@ -322,11 +371,11 @@ class MQTTService {
               const topicWake = this.getTopicWake();
 
               if (topicStatus) {
-                this.ws?.send(buildSubscribePacket(this.packetId++, topicStatus).buffer);
+                this.sendPacket(buildSubscribePacket(this.packetId++, topicStatus));
                 this.addLog(`[MQTT] Subscribed ke ${topicStatus}`);
               }
               if (topicWake) {
-                this.ws?.send(buildSubscribePacket(this.packetId++, topicWake).buffer);
+                this.sendPacket(buildSubscribePacket(this.packetId++, topicWake));
                 this.addLog(`[MQTT] Subscribed ke ${topicWake}`);
               }
             } else {
@@ -440,9 +489,14 @@ class MQTTService {
 
       try {
         const packet = buildPublishPacket(topic, payload);
-        this.ws.send(packet.buffer);
-        this.addLog(`[WAKE TERKIRIM] Berhasil broadcast sinyal WAKE ke stasiun ${this.config.stationKey}`);
-        resolve(true);
+        const ok = this.sendPacket(packet);
+        if (ok) {
+          this.addLog(`[WAKE TERKIRIM] Berhasil broadcast sinyal WAKE ke stasiun ${this.config.stationKey}`);
+          resolve(true);
+        } else {
+          this.addLog('[ERROR WAKE] Gagal mengirim paket melalui socket');
+          resolve(false);
+        }
       } catch (e) {
         this.addLog(`[ERROR WAKE] Gagal mengirim paket: ${String(e)}`);
         resolve(false);
@@ -472,9 +526,14 @@ class MQTTService {
 
       try {
         const packet = buildPublishPacket(topic, payload);
-        this.ws.send(packet.buffer);
-        this.addLog(`[KONTROL TERKIRIM] Perintah ${action.toUpperCase()} dikirim ke stasiun ${this.config.stationKey}`);
-        resolve(true);
+        const ok = this.sendPacket(packet);
+        if (ok) {
+          this.addLog(`[KONTROL TERKIRIM] Perintah ${action.toUpperCase()} dikirim ke stasiun ${this.config.stationKey}`);
+          resolve(true);
+        } else {
+          this.addLog(`[ERROR KONTROL] Gagal mengirim ${action.toUpperCase()}`);
+          resolve(false);
+        }
       } catch (e) {
         this.addLog(`[ERROR KONTROL] Gagal mengirim perintah: ${String(e)}`);
         resolve(false);
