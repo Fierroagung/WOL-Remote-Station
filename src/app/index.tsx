@@ -87,17 +87,19 @@ export default function HomeScreen() {
   stationConfigRef.current = stationConfig;
 
   useEffect(() => {
-    // 1. Muat konfigurasi tersimpan dari storage
+    // 1. Muat konfigurasi tersimpan dari storage permanen
     const loadStoredConfig = async () => {
       try {
         const stored = await StorageService.getItem('wol_station_config');
         if (stored) {
           const parsed = JSON.parse(stored) as StationConfig;
-          if (parsed && parsed.stationKey && parsed.stationKey.trim().length > 0) {
+          if (parsed) {
             setStationConfig(parsed);
-            mqttClient.updateConfig(parsed);
-          } else {
-            setPcStatus('UNCONFIGURED');
+            if (parsed.stationKey && parsed.stationKey.trim().length > 0) {
+              mqttClient.updateConfig(parsed);
+            } else {
+              setPcStatus('UNCONFIGURED');
+            }
           }
         } else {
           setPcStatus('UNCONFIGURED');

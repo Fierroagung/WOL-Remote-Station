@@ -46,5 +46,27 @@ class ExpoWolModule : Module() {
         }
       }
     }
+
+    AsyncFunction("saveSetting") { key: String, value: String, promise: Promise ->
+      try {
+        val context = appContext.reactContext ?: appContext.currentActivity?.applicationContext
+        val prefs = context?.getSharedPreferences("wol_remote_station_prefs", android.content.Context.MODE_PRIVATE)
+        val saved = prefs?.edit()?.putString(key, value)?.commit() ?: false
+        promise.resolve(saved)
+      } catch (e: Exception) {
+        promise.resolve(false)
+      }
+    }
+
+    AsyncFunction("getSetting") { key: String, promise: Promise ->
+      try {
+        val context = appContext.reactContext ?: appContext.currentActivity?.applicationContext
+        val prefs = context?.getSharedPreferences("wol_remote_station_prefs", android.content.Context.MODE_PRIVATE)
+        val value = prefs?.getString(key, null)
+        promise.resolve(value)
+      } catch (e: Exception) {
+        promise.resolve(null)
+      }
+    }
   }
 }

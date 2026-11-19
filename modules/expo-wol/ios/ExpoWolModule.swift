@@ -60,5 +60,20 @@ public class ExpoWolModule: Module {
         promise.resolve(sent > 0)
       }
     }
+
+    AsyncFunction("saveSetting") { (key: String, value: String, promise: Promise) in
+      UserDefaults.standard.set(value, forKey: "wol_remote_" + key)
+      UserDefaults.standard.synchronize()
+      promise.resolve(true)
+    }
+
+    AsyncFunction("getSetting") { (key: String, promise: Promise) in
+      let val = UserDefaults.standard.string(forKey: "wol_remote_" + key)
+      if let actual = val {
+        promise.resolve(actual)
+      } else {
+        promise.resolve(nil as String?)
+      }
+    }
   }
 }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   View,
@@ -33,7 +33,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [brokerUrl, setBrokerUrl] = useState(config.brokerUrl || '');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Sync saat modal dibuka
+  // PENTING: Hanya sinkronisasi saat modal BARU DIBUKA (visible berubah dari false ke true)
+  // Tidak bergantung pada config agar parent re-render tidak pernah mengunci/menimpa ketikan user!
   useEffect(() => {
     if (visible) {
       setStationName(config.stationName || '');
@@ -43,12 +44,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setBrokerUrl(config.brokerUrl || '');
       setErrorMessage(null);
     }
-  }, [visible, config]);
+  }, [visible]);
 
   const handleGenerateKey = () => {
     const chars = Math.random().toString(36).substring(2, 6).toUpperCase();
     const newKey = `WOL-${chars}-PC`;
     setStationKey(newKey);
+    setErrorMessage(null);
+  };
+
+  const handleClearAll = () => {
+    setStationName('');
+    setStationKey('');
+    setMacAddress('');
+    setBroadcastIp('');
+    setBrokerUrl('');
     setErrorMessage(null);
   };
 
@@ -81,7 +91,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   return (
     <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.overlay}
       >
         <View style={styles.modalContent}>
@@ -91,9 +101,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Text style={styles.modalKicker}>PENGATURAN PERANGKAT</Text>
               <Text style={styles.modalTitle}>Konfigurasi Stasiun PC</Text>
             </View>
-            <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
-              <Text style={styles.closeBtnText}>✕</Text>
-            </TouchableOpacity>
+            <View style={styles.headerRightBtns}>
+              <TouchableOpacity onPress={handleClearAll} style={styles.clearBtn}>
+                <Text style={styles.clearBtnText}>Kosongkan</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+                <Text style={styles.closeBtnText}>✕</Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
           {/* Validation Error Message */}
@@ -104,10 +119,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </View>
           )}
 
-          <ScrollView style={styles.formScroll} showsVerticalScrollIndicator={false}>
+          <ScrollView style={styles.formScroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
             <Text style={styles.helpText}>
-              Masukkan nomor identitas komputer Anda yang tertera di script PC Companion. Kode ini
-              yang menghubungkan HP Anda ke PC secara universal dari mana saja.
+              Masukkan nomor identitas komputer Anda yang tertera di script PC Companion. Kolom di bawah bebas Anda edit kapan saja.
             </Text>
 
             {/* Input: Nama Komputer */}
@@ -116,6 +130,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <TextInput
                 style={styles.textInput}
                 value={stationName}
+                editable={true}
                 onChangeText={(t) => {
                   setStationName(t);
                   setErrorMessage(null);
@@ -136,6 +151,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <TextInput
                 style={[styles.textInput, styles.monoInput, { color: CyberColors.neonCyan }]}
                 value={stationKey}
+                editable={true}
                 onChangeText={(t) => {
                   setStationKey(t);
                   setErrorMessage(null);
@@ -156,6 +172,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <TextInput
                 style={[styles.textInput, styles.monoInput]}
                 value={macAddress}
+                editable={true}
                 onChangeText={(t) => {
                   setMacAddress(t);
                   setErrorMessage(null);
@@ -176,6 +193,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <TextInput
                 style={[styles.textInput, styles.monoInput]}
                 value={broadcastIp}
+                editable={true}
                 onChangeText={(t) => {
                   setBroadcastIp(t);
                   setErrorMessage(null);
@@ -196,6 +214,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <TextInput
                 style={[styles.textInput, styles.monoInput]}
                 value={brokerUrl}
+                editable={true}
                 onChangeText={(t) => {
                   setBrokerUrl(t);
                   setErrorMessage(null);
@@ -249,6 +268,24 @@ const styles = StyleSheet.create({
     borderBottomColor: '#1e293b',
     paddingBottom: 14,
     marginBottom: 16,
+  },
+  headerRightBtns: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  clearBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+  },
+  clearBtnText: {
+    color: '#f87171',
+    fontSize: 11,
+    fontWeight: '600',
   },
   modalKicker: {
     color: CyberColors.neonIndigoBright,
