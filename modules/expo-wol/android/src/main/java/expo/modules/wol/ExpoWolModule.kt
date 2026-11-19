@@ -2,22 +2,23 @@ package expo.modules.wol
 
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
+import expo.modules.kotlin.Promise
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
+import kotlin.concurrent.thread
 
 class ExpoWolModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("ExpoWol")
 
-    AsyncFunction("sendWakeOnLan") { mac: String, broadcastIp: String, port: Int ->
-      withContext(Dispatchers.IO) {
+    AsyncFunction("sendWakeOnLan") { mac: String, broadcastIp: String, port: Int, promise: Promise ->
+      thread {
         try {
           val cleanMac = mac.replace(":", "").replace("-", "").trim()
           if (cleanMac.length != 12) {
-            return@withContext false
+            promise.resolve(false)
+            return@thread
           }
           val macBytes = ByteArray(6)
           for (i in 0 until 6) {
@@ -38,10 +39,10 @@ class ExpoWolModule : Module() {
           val packet = DatagramPacket(bytes, bytes.size, address, targetPort)
           socket.send(packet)
           socket.close()
-          true
+          promise.resolve(true)
         } catch (e: Exception) {
           e.printStackTrace()
-          false
+          promise.resolve(false)
         }
       }
     }
