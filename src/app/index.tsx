@@ -13,7 +13,15 @@ import { CyberColors } from '../theme/colors';
 import { CyberMasterCircle } from '../components/CyberMasterCircle';
 import { PowerGrid } from '../components/PowerGrid';
 import { StatusCard } from '../components/StatusCard';
-import { mqttClient, PCStatus, PowerAction, DEFAULT_CONFIG } from '../services/mqttService';
+import { SettingsModal } from '../components/SettingsModal';
+import {
+  mqttClient,
+  PCStatus,
+  PowerAction,
+  StationConfig,
+  DEFAULT_STATION_CONFIG,
+} from '../services/mqttService';
+import { StorageService } from '../services/storageService';
 
 type AppRole = 'controller' | 'bridge';
 
@@ -22,23 +30,46 @@ export default function HomeScreen() {
   const isLandscape = width > height;
   const isTablet = Math.min(width, height) >= 600;
 
-  // State Manajemen
+  // State Konfigurasi Stasiun (Universal)
+  const [stationConfig, setStationConfig] = useState<StationConfig>(DEFAULT_STATION_CONFIG);
+  const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+
+  // State Manajemen Daya & Peran
   const [role, setRole] = useState<AppRole>('controller');
   const [pcStatus, setPcStatus] = useState<PCStatus>('OFFLINE');
   const [activeTransition, setActiveTransition] = useState<PowerAction | 'waking' | null>(null);
   const [isBridgeRunning, setIsBridgeRunning] = useState<boolean>(true);
   const [logs, setLogs] = useState<string[]>([
-    '[22:30:10] Standby Bridge siap melayani 24/7',
-    '[22:31:00] MQTT Cloud Connected (HiveMQ SSL)',
-    '[22:35:00] Menunggu sinyal perintah dari HP Utama...',
+    '[SYSTEM] Standby Bridge siap melayani 24/7',
+    '[MQTT] Terhubung ke Global Cloud Network',
+    '[PAIRING] Siap menerima sinyal dari stasiun terdaftar',
   ]);
 
   // Toast Notification State
-  const [toastMessage, setToastMessage] = useState<{ title: string; desc: string; type: 'success' | 'danger' | 'info' } | null>(null);
+  const [toastMessage, setToastMessage] = useState<{
+    title: string;
+    desc: string;
+    type: 'success' | 'danger' | 'info';
+  } | null>(null);
   const toastAnim = useState(new Animated.Value(-100))[0];
 
   useEffect(() => {
-    // Inisialisasi koneksi MQTT
+    // 1. Muat konfigurasi tersimpan dari storage
+    const loadStoredConfig = async () => {
+      const stored = await StorageService.getItem('wol_station_config');
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored) as StationConfig;
+          setStationConfig(parsed);
+          mqttClient.updateConfig(parsed);
+        } catch {
+          // Gunakan default
+        }
+      }
+    };
+    loadStoredConfig();
+
+    // 2. Inisialisasi koneksi MQTT
     mqttClient.connect();
 
     const unsubStatus = mqttClient.onStatusChange((status) => {
@@ -55,7 +86,18 @@ export default function HomeScreen() {
     };
   }, []);
 
-  const triggerToast = (title: string, desc: string, type: 'success' | 'danger' | 'info' = 'success') => {
+  const handleSaveConfig = async (newConfig: StationConfig) => {
+    setStationConfig(newConfig);
+    mqttClient.updateConfig(newConfig);
+    await StorageService.setItem('wol_station_config', JSON.stringify(newConfig));
+    triggerToast('Konfigurasi Disimpan', `Terhubung ke stasiun: ${newConfig.stationKey}`, 'success');
+  };
+
+  const triggerToast = (
+    title: string,
+    desc: string,
+    type: 'success' | 'danger' | 'info' = 'success'
+  ) => {
     setToastMessage({ title, desc, type });
     Animated.sequence([
       Animated.timing(toastAnim, {
@@ -147,6 +189,14 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      {/* Settings Modal (Universal Configuration) */}
+      <SettingsModal
+        visible={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+        config={stationConfig}
+        onSave={handleSaveConfig}
+      />
+
       {/* Floating In-App Toast Notification */}
       {toastMessage && (
         <Animated.View
@@ -173,36 +223,49 @@ export default function HomeScreen() {
         </Animated.View>
       )}
 
-      {/* Top Header & Role Switcher */}
+      {/* Top Header & Navigation */}
       <View style={styles.header}>
-        <View>
+        <View style={styles.headerLeft}>
           <Text style={styles.headerKicker}>
             {role === 'controller' ? 'REMOTE WORKSTATION' : 'STANDBY RELAY'}
           </Text>
-          <Text style={styles.headerTitle}>RIG-STATION-PRO</Text>
+          <Text style={styles.headerTitle} numberOfLines={1}>
+            {stationConfig.stationName}
+          </Text>
         </View>
 
-        {/* Dual-Role Selector Pill */}
-        <View style={styles.rolePicker}>
+        <View style={styles.headerRight}>
+          {/* Settings Button */}
           <TouchableOpacity
             activeOpacity={0.75}
-            onPress={() => setRole('controller')}
-            style={[styles.roleBtn, role === 'controller' && styles.roleBtnActive]}
+            onPress={() => setIsSettingsOpen(true)}
+            style={styles.settingsBtn}
           >
-            <Text style={styles.roleBtnText}>🎮 Controller</Text>
+            <Text style={styles.settingsBtnText}>⚙️</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            activeOpacity={0.75}
-            onPress={() => setRole('bridge')}
-            style={[styles.roleBtn, role === 'bridge' && styles.roleBtnActiveBridge]}
-          >
-            <Text style={styles.roleBtnText}>📡 Bridge</Text>
-          </TouchableOpacity>
+
+          {/* Dual-Role Selector Pill */}
+          <View style={styles.rolePicker}>
+            <TouchableOpacity
+              activeOpacity={0.75}
+              onPress={() => setRole('controller')}
+              style={[styles.roleBtn, role === 'controller' && styles.roleBtnActive]}
+            >
+              <Text style={styles.roleBtnText}>🎮 Remote</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              activeOpacity={0.75}
+              onPress={() => setRole('bridge')}
+              style={[styles.roleBtn, role === 'bridge' && styles.roleBtnActiveBridge]}
+            >
+              <Text style={styles.roleBtnText}>📡 Bridge</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </View>
 
       {/* ======================================================== */}
-      {/* MODE 1: CONTROLLER (HP UTAMA)                            */}
+      {/* MODE 1: CONTROLLER (HP UTAMA - UNIVERSAL)                 */}
       {/* ======================================================== */}
       {role === 'controller' ? (
         isLandscape || isTablet ? (
@@ -217,19 +280,22 @@ export default function HomeScreen() {
                 size={isTablet ? 'large' : 'compact'}
                 captionText={captionText}
               />
+              <Text style={styles.stationKeyBadge}>
+                KEY: {stationConfig.stationKey}
+              </Text>
             </View>
 
             {/* Kolom Kanan: Status & Power Grid */}
             <View style={styles.colRight}>
               <StatusCard status={pcStatus} activeTransition={activeTransition} />
               <PowerGrid onAction={handlePowerAction} disabled={!!activeTransition} compact={!isTablet} />
-              
+
               <View style={styles.footerBar}>
                 <View style={styles.footerDotRow}>
                   <View style={styles.liveDot} />
-                  <Text style={styles.footerText}>MQTT Cloud: Connected</Text>
+                  <Text style={styles.footerText}>Stasiun: {stationConfig.stationKey}</Text>
                 </View>
-                <Text style={styles.footerText}>Ping: 24ms (QoS 1)</Text>
+                <Text style={styles.footerText}>Cloud: Connected (QoS 1)</Text>
               </View>
             </View>
           </View>
@@ -251,9 +317,9 @@ export default function HomeScreen() {
             <View style={styles.footerBar}>
               <View style={styles.footerDotRow}>
                 <View style={styles.liveDot} />
-                <Text style={styles.footerText}>MQTT Cloud: Connected</Text>
+                <Text style={styles.footerText}>Stasiun: {stationConfig.stationKey}</Text>
               </View>
-              <Text style={styles.footerText}>Ping: 28ms</Text>
+              <Text style={styles.footerText}>Ping: 24ms</Text>
             </View>
           </ScrollView>
         )
@@ -267,7 +333,9 @@ export default function HomeScreen() {
             <View style={styles.bridgeInfo}>
               <Text style={styles.bridgeTitle}>Layanan WOL Listener</Text>
               <Text style={styles.bridgeSubtitle}>
-                {isBridgeRunning ? 'Siap mendengarkan sinyal wake 24/7' : 'Layanan dihentikan sementara'}
+                {isBridgeRunning
+                  ? `Mendengarkan stasiun '${stationConfig.stationKey}' 24/7`
+                  : 'Layanan dihentikan sementara'}
               </Text>
             </View>
             <TouchableOpacity
@@ -278,21 +346,23 @@ export default function HomeScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* Network Specs */}
+          {/* Network & Pairing Specs */}
           <View style={styles.specsCard}>
             <View style={styles.specRow}>
-              <Text style={styles.specLabel}>Wi-Fi Terkoneksi:</Text>
-              <Text style={styles.specValue}>Home_Fiber_5G (192.168.1.55)</Text>
+              <Text style={styles.specLabel}>Station Pairing Key:</Text>
+              <Text style={[styles.specValue, { color: CyberColors.neonCyan }]}>
+                {stationConfig.stationKey}
+              </Text>
             </View>
             <View style={styles.specRow}>
               <Text style={styles.specLabel}>Target MAC PC:</Text>
-              <Text style={[styles.specValue, { color: CyberColors.neonCyan }]}>
-                {DEFAULT_CONFIG.pcMacAddress}
+              <Text style={[styles.specValue, { color: '#ffffff' }]}>
+                {stationConfig.macAddress}
               </Text>
             </View>
             <View style={styles.specRow}>
               <Text style={styles.specLabel}>Broadcast LAN:</Text>
-              <Text style={styles.specValue}>{DEFAULT_CONFIG.pcBroadcastIp}:9</Text>
+              <Text style={styles.specValue}>{stationConfig.broadcastIp}:9</Text>
             </View>
           </View>
 
@@ -335,6 +405,15 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#1e293b',
   },
+  headerLeft: {
+    flex: 1,
+    marginRight: 8,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   headerKicker: {
     color: CyberColors.neonIndigoBright,
     fontSize: 9,
@@ -347,6 +426,19 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: 'bold',
     letterSpacing: 0.5,
+  },
+  settingsBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    backgroundColor: '#0f172a',
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  settingsBtnText: {
+    fontSize: 14,
   },
   rolePicker: {
     flexDirection: 'row',
@@ -395,6 +487,12 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'space-between',
     paddingLeft: 4,
+  },
+  stationKeyBadge: {
+    color: CyberColors.neonCyan,
+    fontSize: 10,
+    fontFamily: 'monospace',
+    marginTop: 4,
   },
   footerBar: {
     flexDirection: 'row',

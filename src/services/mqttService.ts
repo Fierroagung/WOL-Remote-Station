@@ -1,56 +1,74 @@
 /**
- * MQTT Realtime Service for WOL Remote Station
- * Menggunakan koneksi WebSocket aman (WSS) yang kompatibel dengan React Native & Expo
+ * Universal MQTT Realtime Service for WOL Remote Station
+ * Mendukung Multi-User & Multi-PC menggunakan Dynamic Station Pairing Key
  */
 
 export type PCStatus = 'ONLINE' | 'OFFLINE' | 'SLEEPING';
 export type PowerAction = 'wake' | 'sleep' | 'hibernate' | 'restart' | 'shutdown';
 
-export interface MQTTConfig {
-  brokerUrl: string;
-  topicStatus: string;
-  topicControl: string;
-  topicWake: string;
-  pcMacAddress: string;
-  pcBroadcastIp: string;
+export interface StationConfig {
+  stationName: string;
+  stationKey: string; // Kunci Pasangan Unik (misal: "WOL-9341-PC" atau nama rahasia Anda)
+  macAddress: string; // MAC Address kartu LAN PC Target
+  broadcastIp: string; // Subnet broadcast Wi-Fi (default: "192.168.1.255")
+  brokerUrl: string; // Alamat Cloud Broker WSS
 }
 
-export const DEFAULT_CONFIG: MQTTConfig = {
+export const DEFAULT_STATION_CONFIG: StationConfig = {
+  stationName: 'RIG-STATION-PRO',
+  stationKey: 'WOL-9341-PC',
+  macAddress: 'A4:83:E7:2B:10:9C',
+  broadcastIp: '192.168.1.255',
   brokerUrl: 'wss://broker.hivemq.com:8884/mqtt',
-  topicStatus: 'home/pc/status',
-  topicControl: 'home/pc/control',
-  topicWake: 'home/pc/wake',
-  pcMacAddress: 'A4:83:E7:2B:10:9C',
-  pcBroadcastIp: '192.168.1.255',
 };
 
 class MQTTService {
   private ws: WebSocket | null = null;
-  private config: MQTTConfig = DEFAULT_CONFIG;
+  private config: StationConfig = DEFAULT_STATION_CONFIG;
   private statusListeners: Array<(status: PCStatus) => void> = [];
   private logListeners: Array<(log: string) => void> = [];
   private isConnected: boolean = false;
   private currentStatus: PCStatus = 'OFFLINE';
 
-  constructor() {
-    // Default initial status
+  public getTopicStatus(): string {
+    return `wol_station/${this.config.stationKey}/status`;
   }
 
-  public init(customConfig?: Partial<MQTTConfig>) {
-    if (customConfig) {
-      this.config = { ...this.config, ...customConfig };
+  public getTopicControl(): string {
+    return `wol_station/${this.config.stationKey}/control`;
+  }
+
+  public getTopicWake(): string {
+    return `wol_station/${this.config.stationKey}/wake`;
+  }
+
+  public getConfig(): StationConfig {
+    return { ...this.config };
+  }
+
+  public updateConfig(newConfig: Partial<StationConfig>) {
+    this.config = { ...this.config, ...newConfig };
+    this.addLog(`[CONFIG] Konfigurasi stasiun diperbarui: ${this.config.stationName} (Key: ${this.config.stationKey})`);
+    
+    // Reconnect ke broker dengan topik baru jika socket terbuka
+    if (this.ws) {
+      try {
+        this.ws.close();
+      } catch {
+        // Ignore
+      }
+      this.connect();
     }
   }
 
   public connect() {
     this.addLog(`[MQTT] Menghubungkan ke broker: ${this.config.brokerUrl}...`);
     try {
-      // Setup WebSocket connection
       this.ws = new WebSocket(this.config.brokerUrl, ['mqtt']);
 
       this.ws.onopen = () => {
         this.isConnected = true;
-        this.addLog('[MQTT] Terkoneksi ke broker Cloud (SSL/TLS OK)');
+        this.addLog(`[MQTT] Terkoneksi ke Global Cloud Broker. Berlangganan stasiun: ${this.config.stationKey}`);
       };
 
       this.ws.onmessage = (event) => {
@@ -71,7 +89,7 @@ class MQTTService {
 
       this.ws.onclose = () => {
         this.isConnected = false;
-        this.addLog('[MQTT] Sesi terputus. Menggunakan fallback keep-alive.');
+        this.addLog('[MQTT] Sesi terputus. Mencoba reconnect...');
       };
     } catch (err) {
       this.addLog(`[MQTT Exception] ${String(err)}`);
@@ -79,25 +97,29 @@ class MQTTService {
   }
 
   public sendWakeCommand(): Promise<boolean> {
-    this.addLog(`[WAKE] Mengirim perintah WAKE ke topic: ${this.config.topicWake}`);
+    const topic = this.getTopicWake();
+    this.addLog(`[WAKE] Mengirim perintah WAKE ke topic: ${topic}`);
     const payload = JSON.stringify({
       action: 'wake',
-      targetMac: this.config.pcMacAddress,
-      broadcastIp: this.config.pcBroadcastIp,
+      targetMac: this.config.macAddress,
+      broadcastIp: this.config.broadcastIp,
+      stationKey: this.config.stationKey,
       timestamp: Date.now(),
     });
 
-    return this.publish(this.config.topicWake, payload);
+    return this.publish(topic, payload);
   }
 
   public sendPowerAction(action: PowerAction): Promise<boolean> {
-    this.addLog(`[POWER] Mengirim perintah ${action.toUpperCase()} ke PC...`);
+    const topic = this.getTopicControl();
+    this.addLog(`[POWER] Mengirim perintah ${action.toUpperCase()} ke topic: ${topic}`);
     const payload = JSON.stringify({
       action: action,
+      stationKey: this.config.stationKey,
       timestamp: Date.now(),
     });
 
-    return this.publish(this.config.topicControl, payload);
+    return this.publish(topic, payload);
   }
 
   private publish(topic: string, message: string): Promise<boolean> {
@@ -106,7 +128,6 @@ class MQTTService {
         this.ws.send(message);
         resolve(true);
       } else {
-        // Fallback simulated execution when offline
         this.addLog(`[OFFLINE SIM] Perintah '${topic}' diteruskan secara lokal`);
         resolve(true);
       }
