@@ -14,12 +14,14 @@ import { CyberMasterCircle } from '../components/CyberMasterCircle';
 import { PowerGrid } from '../components/PowerGrid';
 import { StatusCard } from '../components/StatusCard';
 import { SettingsModal } from '../components/SettingsModal';
+import { QRScannerModal } from '../components/QRScannerModal';
 import {
   mqttClient,
   PCStatus,
   PowerAction,
   StationConfig,
   EMPTY_STATION_CONFIG,
+  sanitizeBrokerUrl,
 } from '../services/mqttService';
 import { StorageService } from '../services/storageService';
 import { WOLService } from '../services/wolService';
@@ -34,6 +36,7 @@ export default function HomeScreen() {
   // State Konfigurasi Stasiun (Universal - Default Kosong)
   const [stationConfig, setStationConfig] = useState<StationConfig>(EMPTY_STATION_CONFIG);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
+  const [isDirectScannerOpen, setIsDirectScannerOpen] = useState<boolean>(false);
 
   // State Manajemen Daya & Peran
   const [role, setRole] = useState<AppRole>('controller');
@@ -193,6 +196,22 @@ export default function HomeScreen() {
     triggerToast('Konfigurasi Disimpan', `Terhubung ke stasiun: ${newConfig.stationKey}`, 'success');
   };
 
+  const handleDirectScanSuccess = (scanned: Partial<StationConfig>) => {
+    if (scanned.stationKey && scanned.macAddress) {
+      const newConfig: StationConfig = {
+        stationName: scanned.stationName || 'RIG-STATION-PRO',
+        stationKey: scanned.stationKey.trim(),
+        macAddress: scanned.macAddress.trim().toUpperCase(),
+        broadcastIp: scanned.broadcastIp || '192.168.0.255',
+        brokerUrl: sanitizeBrokerUrl(scanned.brokerUrl || 'broker.hivemq.com'),
+      };
+      handleSaveConfig(newConfig);
+      setIsDirectScannerOpen(false);
+      setIsSettingsOpen(false);
+      triggerToast('Pairing PC Berhasil!', `Stasiun ${newConfig.stationName} siap dikontrol.`, 'success');
+    }
+  };
+
   // Handler Perintah Wake Up (Magic Packet)
   const handleWake = async () => {
     if (activeTransition) return;
@@ -293,6 +312,13 @@ export default function HomeScreen() {
         onSave={handleSaveConfig}
       />
 
+      {/* Direct QR Scanner Screen */}
+      <QRScannerModal
+        visible={isDirectScannerOpen}
+        onClose={() => setIsDirectScannerOpen(false)}
+        onScanSuccess={handleDirectScanSuccess}
+      />
+
       {/* Floating In-App Toast Notification */}
       {toastMessage && (
         <Animated.View
@@ -334,7 +360,7 @@ export default function HomeScreen() {
           {/* Quick QR Scan & Settings Buttons */}
           <TouchableOpacity
             activeOpacity={0.75}
-            onPress={() => setIsSettingsOpen(true)}
+            onPress={() => setIsDirectScannerOpen(true)}
             style={styles.settingsBtn}
           >
             <Text style={styles.settingsBtnText}>📷</Text>

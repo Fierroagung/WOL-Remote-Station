@@ -113,7 +113,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   if (!visible) return null;
 
   return (
-    <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={onClose}>
+    <View style={styles.fullScreenWrapper}>
       <SafeAreaView style={styles.safeContainer} edges={['top', 'bottom', 'left', 'right']}>
         {/* Top Header Navigation */}
         <View style={styles.header}>
@@ -295,14 +295,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           onScanSuccess={handleScanSuccess}
         />
       </SafeAreaView>
-    </Modal>
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
+  fullScreenWrapper: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#020617',
+    zIndex: 1000,
+    elevation: 1000,
+  },
   safeContainer: {
     flex: 1,
     backgroundColor: '#020617',
+  },
   },
   header: {
     flexDirection: 'row',

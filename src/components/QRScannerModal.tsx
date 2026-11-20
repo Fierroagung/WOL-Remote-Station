@@ -4,9 +4,9 @@ import {
   View,
   Text,
   TouchableOpacity,
-  Modal,
   Platform,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { CyberColors } from '../theme/colors';
 import { StationConfig } from '../services/mqttService';
@@ -24,6 +24,8 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
 }) => {
   const [permission, requestPermission] = useCameraPermissions();
   const [isScanned, setIsScanned] = useState(false);
+
+  if (!visible) return null;
 
   const handleBarcodeScanned = ({ data }: { data: string }) => {
     if (isScanned) return;
@@ -45,7 +47,7 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
         return;
       }
     } catch {
-      // 2. Fallback: jika berupa teks biasa (misalnya hanya Station Key)
+      // 2. Fallback jika berupa teks biasa (misalnya hanya Station Key)
       if (data.startsWith('WOL-')) {
         onScanSuccess({ stationKey: data.trim() });
         onClose();
@@ -53,19 +55,16 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
       }
     }
 
-    // Jika format tidak dikenali
     alert('Format QR Code tidak dikenali. Pastikan Anda memindai QR Code dari aplikasi WOL Remote Station di PC.');
     setTimeout(() => setIsScanned(false), 2000);
   };
 
-  if (!visible) return null;
-
   return (
-    <Modal visible={visible} animationType="fade" transparent={false} onRequestClose={onClose}>
-      <View style={styles.container}>
+    <View style={styles.container}>
+      <SafeAreaView style={styles.innerSafe} edges={['top', 'bottom', 'left', 'right']}>
         {/* Header Bar */}
         <View style={styles.header}>
-          <TouchableOpacity onPress={onClose} style={styles.closeBtn}>
+          <TouchableOpacity onPress={onClose} style={styles.closeBtn} activeOpacity={0.7}>
             <Text style={styles.closeBtnText}>← Kembali</Text>
           </TouchableOpacity>
           <Text style={styles.headerTitle}>PINDAI QR CODE PC</Text>
@@ -80,10 +79,10 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
             <Text style={styles.permissionDesc}>
               Aplikasi memerlukan akses kamera untuk memindai kode QR stasiun PC Anda secara instan.
             </Text>
-            <TouchableOpacity style={styles.grantBtn} onPress={requestPermission}>
+            <TouchableOpacity style={styles.grantBtn} onPress={requestPermission} activeOpacity={0.8}>
               <Text style={styles.grantBtnText}>Berikan Izin Kamera</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.cancelLink} onPress={onClose}>
+            <TouchableOpacity style={styles.cancelLink} onPress={onClose} activeOpacity={0.7}>
               <Text style={styles.cancelLinkText}>Batal</Text>
             </TouchableOpacity>
           </View>
@@ -98,8 +97,8 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
               onBarcodeScanned={isScanned ? undefined : handleBarcodeScanned}
             />
 
-            {/* Viewfinder Target Reticle */}
-            <View style={styles.overlay}>
+            {/* Viewfinder Target Reticle (Transparan Penuh Tanpa Lapisan Gelap) */}
+            <View style={styles.overlay} pointerEvents="none">
               <View style={styles.scanTarget}>
                 <View style={[styles.corner, styles.cornerTL]} />
                 <View style={[styles.corner, styles.cornerTR]} />
@@ -113,26 +112,31 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
             </View>
           </View>
         )}
-      </View>
-    </Modal>
+      </SafeAreaView>
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: '#000000',
+    zIndex: 9999,
+    elevation: 9999,
+  },
+  innerSafe: {
     flex: 1,
-    backgroundColor: '#020617',
+    backgroundColor: '#000000',
   },
   header: {
-    height: 60,
+    height: 56,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    backgroundColor: '#0f172a',
+    backgroundColor: 'rgba(15, 23, 42, 0.9)',
     borderBottomWidth: 1,
     borderBottomColor: '#1e293b',
-    marginTop: Platform.OS === 'android' ? 24 : 44,
   },
   closeBtn: {
     paddingVertical: 8,
@@ -156,6 +160,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     padding: 30,
+    backgroundColor: '#020617',
   },
   permissionIcon: {
     fontSize: 54,
@@ -196,23 +201,25 @@ const styles = StyleSheet.create({
   cameraWrapper: {
     flex: 1,
     position: 'relative',
+    overflow: 'hidden',
+    backgroundColor: '#000000',
   },
   overlay: {
     ...StyleSheet.absoluteFillObject,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(2, 6, 23, 0.45)',
+    backgroundColor: 'transparent',
   },
   scanTarget: {
-    width: 260,
-    height: 260,
+    width: 270,
+    height: 270,
     position: 'relative',
     backgroundColor: 'transparent',
   },
   corner: {
     position: 'absolute',
-    width: 32,
-    height: 32,
+    width: 36,
+    height: 36,
     borderColor: CyberColors.neonCyan,
   },
   cornerTL: {
@@ -240,14 +247,16 @@ const styles = StyleSheet.create({
     borderRightWidth: 4,
   },
   instructionText: {
-    color: '#f8fafc',
+    color: '#ffffff',
     fontSize: 14,
     fontWeight: '600',
-    marginTop: 32,
+    marginTop: 36,
     textAlign: 'center',
     paddingHorizontal: 20,
-    backgroundColor: 'rgba(15, 23, 42, 0.75)',
-    paddingVertical: 8,
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    paddingVertical: 10,
     borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#334155',
   },
 });
