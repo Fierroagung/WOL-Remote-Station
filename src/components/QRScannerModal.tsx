@@ -119,10 +119,8 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
 
 const styles = StyleSheet.create({
   container: {
-    ...StyleSheet.absoluteFillObject,
+    flex: 1,
     backgroundColor: '#000000',
-    zIndex: 9999,
-    elevation: 9999,
   },
   innerSafe: {
     flex: 1,

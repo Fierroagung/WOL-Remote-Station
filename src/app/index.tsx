@@ -302,23 +302,31 @@ export default function HomeScreen() {
       ? 'PC telah aktif dan siap dikontrol secara realtime'
       : 'Ketuk tombol untuk membangunkan komputer via LAN';
 
-  return (
-    <SafeAreaView style={styles.safeArea}>
-      {/* Settings Modal (Universal Configuration) */}
+  // 1. Jika Pemindai QR Langsung Aktif: Tampilkan HANYA Layar Pemindai QR!
+  if (isDirectScannerOpen) {
+    return (
+      <QRScannerModal
+        visible={true}
+        onClose={() => setIsDirectScannerOpen(false)}
+        onScanSuccess={handleDirectScanSuccess}
+      />
+    );
+  }
+
+  // 2. Jika Menu Pengaturan Aktif: Tampilkan HANYA Layar Pengaturan!
+  if (isSettingsOpen) {
+    return (
       <SettingsModal
-        visible={isSettingsOpen}
+        visible={true}
         onClose={() => setIsSettingsOpen(false)}
         config={stationConfig}
         onSave={handleSaveConfig}
       />
+    );
+  }
 
-      {/* Direct QR Scanner Screen */}
-      <QRScannerModal
-        visible={isDirectScannerOpen}
-        onClose={() => setIsDirectScannerOpen(false)}
-        onScanSuccess={handleDirectScanSuccess}
-      />
-
+  return (
+    <SafeAreaView style={styles.safeArea}>
       {/* Floating In-App Toast Notification */}
       {toastMessage && (
         <Animated.View

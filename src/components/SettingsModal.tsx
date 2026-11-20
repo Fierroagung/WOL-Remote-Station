@@ -112,6 +112,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   if (!visible) return null;
 
+  if (isScannerOpen) {
+    return (
+      <QRScannerModal
+        visible={true}
+        onClose={() => setIsScannerOpen(false)}
+        onScanSuccess={handleScanSuccess}
+      />
+    );
+  }
+
   return (
     <View style={styles.fullScreenWrapper}>
       <SafeAreaView style={styles.safeContainer} edges={['top', 'bottom', 'left', 'right']}>
@@ -287,13 +297,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           {/* Ruang ekstra agar scroll sangat leluasa meluncur sampai bawah */}
           <View style={{ height: 120 }} />
         </ScrollView>
-
-        {/* Modal Kamera QR Scanner */}
-        <QRScannerModal
-          visible={isScannerOpen}
-          onClose={() => setIsScannerOpen(false)}
-          onScanSuccess={handleScanSuccess}
-        />
       </SafeAreaView>
     </View>
   );
@@ -301,10 +304,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
 const styles = StyleSheet.create({
   fullScreenWrapper: {
-    ...StyleSheet.absoluteFillObject,
+    flex: 1,
     backgroundColor: '#020617',
-    zIndex: 1000,
-    elevation: 1000,
   },
   safeContainer: {
     flex: 1,
