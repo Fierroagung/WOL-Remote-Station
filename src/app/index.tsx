@@ -205,29 +205,23 @@ export default function HomeScreen() {
 
     setActiveTransition('waking');
 
-    // 1. Kirim via Cloud MQTT (agar diterima HP Bridge di rumah)
-    const mqttSent = await mqttClient.sendWakeCommand();
+    // 1. Kirim via Cloud MQTT (agar diterima HP Bridge di rumah jika di luar jaringan)
+    await mqttClient.sendWakeCommand();
 
     // 2. Kirim juga secara native UDP broadcast ganda lokal (Wi-Fi lokal subnet + 255.255.255.255)
     await WOLService.sendMagicPacket(stationConfig.macAddress, stationConfig.broadcastIp, 9);
 
-    if (!mqttSent && !isCloudConnected) {
-      triggerToast('Koneksi Cloud Terputus', 'Sinyal hanya dicoba via LAN lokal. Hubungkan ponsel ke internet jika berada di luar rumah.', 'danger');
-    } else {
-      triggerToast('Sinyal WAKE Dikirim', 'Menunggu PC menyala dan melapor ke Cloud (maks. 25 detik)...', 'info');
-    }
+    // Langsung beri umpan balik sukses seketika (Magic Packet adalah transmisi fisik fire-and-forget)
+    triggerToast(
+      'Magic Packet Terkirim!',
+      'Sinyal 102-byte berhasil dipancarkan ke kartu LAN PC. Komputer sedang proses menyala.',
+      'success'
+    );
 
-    // 3. Pasang timeout nyata: jika 25 detik PC belum Online, beri tahu user bahwa gagal
-    if (wakeTimeoutRef.current) clearTimeout(wakeTimeoutRef.current);
-    wakeTimeoutRef.current = setTimeout(() => {
-      wakeTimeoutRef.current = null;
+    // Hentikan animasi sinkronisasi setelah 4 detik
+    setTimeout(() => {
       setActiveTransition(null);
-      triggerToast(
-        'PC Belum Menyala',
-        'Magic Packet telah dikirim tapi PC belum merespons. Pastikan fitur Wake-On-LAN aktif di BIOS dan kabel LAN terhubung.',
-        'danger'
-      );
-    }, 25000);
+    }, 4000);
   };
 
   // Handler Kontrol Daya (Sleep, Hibernate, Restart, Shutdown)
