@@ -331,7 +331,15 @@ export default function HomeScreen() {
         </View>
 
         <View style={styles.headerRight}>
-          {/* Settings Button */}
+          {/* Quick QR Scan & Settings Buttons */}
+          <TouchableOpacity
+            activeOpacity={0.75}
+            onPress={() => setIsSettingsOpen(true)}
+            style={styles.settingsBtn}
+          >
+            <Text style={styles.settingsBtnText}>📷</Text>
+          </TouchableOpacity>
+
           <TouchableOpacity
             activeOpacity={0.75}
             onPress={() => setIsSettingsOpen(true)}
@@ -371,7 +379,7 @@ export default function HomeScreen() {
           <View style={styles.unconfiguredBannerCol}>
             <Text style={styles.unconfiguredBannerTitle}>Komputer Belum Dihubungkan</Text>
             <Text style={styles.unconfiguredBannerDesc}>
-              Ketuk di sini untuk memasukkan Station Key & MAC Address dari PC Anda.
+              Ketuk di sini untuk memindai QR Code PC atau masukkan Station Key & MAC.
             </Text>
           </View>
           <Text style={styles.unconfiguredBannerArrow}>→</Text>
