@@ -7,7 +7,6 @@ import {
   TouchableOpacity,
   Modal,
   ScrollView,
-  KeyboardAvoidingView,
   Platform,
   Keyboard,
 } from 'react-native';
@@ -33,9 +32,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [broadcastIp, setBroadcastIp] = useState(config.broadcastIp || '');
   const [brokerUrl, setBrokerUrl] = useState(config.brokerUrl || '');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [keyboardHeight, setKeyboardHeight] = useState<number>(0);
+
+  // Pantau keyboard secara dinamis agar layout modal menyusut pas di atas keyboard
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e) => {
+        setKeyboardHeight(e.endCoordinates.height);
+      }
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => {
+        setKeyboardHeight(0);
+      }
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   // PENTING: Hanya sinkronisasi saat modal BARU DIBUKA (visible berubah dari false ke true)
-  // Tidak bergantung pada config agar parent re-render tidak pernah mengunci/menimpa ketikan user!
   useEffect(() => {
     if (visible) {
       setStationName(config.stationName || '');
@@ -76,7 +95,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       return;
     }
 
-    // Normalisasi Broker URL dengan aman (Mencegah crash native Android)
+    // Normalisasi Broker URL dengan aman
     const sanitizedBroker = sanitizeBrokerUrl(brokerUrl);
 
     onSave({
@@ -92,11 +111,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   return (
     <Modal visible={visible} animationType="slide" transparent={true} onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.overlay}
-      >
-        <View style={styles.modalContent}>
+      <View style={styles.overlay}>
+        <View
+          style={[
+            styles.modalContent,
+            keyboardHeight > 0
+              ? { height: undefined, flex: 1, marginBottom: keyboardHeight }
+              : { height: '92%' },
+          ]}
+        >
           {/* Header Modal */}
           <View style={styles.modalHeader}>
             <View>
@@ -126,7 +149,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           <ScrollView
             style={styles.formScroll}
-            contentContainerStyle={styles.formScrollContent}
+            contentContainerStyle={[
+              styles.formScrollContent,
+              keyboardHeight > 0 && { paddingBottom: 60 },
+            ]}
             showsVerticalScrollIndicator={true}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="on-drag"
@@ -251,7 +277,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </View>
           </ScrollView>
         </View>
-      </KeyboardAvoidingView>
+      </View>
     </Modal>
   );
 };
@@ -271,7 +297,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 20,
     paddingBottom: Platform.OS === 'ios' ? 30 : 12,
-    height: '92%',
     display: 'flex',
     flexDirection: 'column',
   },
@@ -365,7 +390,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   formScrollContent: {
-    paddingBottom: 80,
+    paddingBottom: 40,
   },
   helpText: {
     color: '#94a3b8',
