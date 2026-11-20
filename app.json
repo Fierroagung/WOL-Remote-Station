@@ -18,6 +18,7 @@
       "bundleIdentifier": "com.fierro.wolremotestation"
     },
     "android": {
+      "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundColor": "#020617"

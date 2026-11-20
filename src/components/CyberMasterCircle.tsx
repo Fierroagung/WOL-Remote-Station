@@ -196,15 +196,11 @@ export const CyberMasterCircle: React.FC<CyberMasterCircleProps> = ({
               <Text style={styles.mainTitle}>
                 {pcStatus === 'UNCONFIGURED'
                   ? 'SETUP PC'
-                  : pcStatus === 'ONLINE'
-                  ? 'KOMPUTER AKTIF'
                   : 'WAKE UP'}
               </Text>
               <Text style={styles.mainSub}>
                 {pcStatus === 'UNCONFIGURED'
                   ? 'PENGATURAN'
-                  : pcStatus === 'ONLINE'
-                  ? 'READY'
                   : 'MAGIC PACKET'}
               </Text>
             </View>

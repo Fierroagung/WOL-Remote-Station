@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   StyleSheet,
   View,
@@ -9,6 +9,7 @@ import {
   ScrollView,
   KeyboardAvoidingView,
   Platform,
+  Keyboard,
 } from 'react-native';
 import { CyberColors } from '../theme/colors';
 import { StationConfig, sanitizeBrokerUrl, DEFAULT_BROKER_WS } from '../services/mqttService';
@@ -85,6 +86,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       broadcastIp: broadcastIp.trim() || '192.168.0.255',
       brokerUrl: sanitizedBroker,
     });
+    Keyboard.dismiss();
     onClose();
   };
 
@@ -102,6 +104,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Text style={styles.modalTitle}>Konfigurasi Stasiun PC</Text>
             </View>
             <View style={styles.headerRightBtns}>
+              <TouchableOpacity onPress={() => Keyboard.dismiss()} style={styles.kbdBtn}>
+                <Text style={styles.kbdBtnText}>⌨️ Tutup</Text>
+              </TouchableOpacity>
               <TouchableOpacity onPress={handleClearAll} style={styles.clearBtn}>
                 <Text style={styles.clearBtnText}>Kosongkan</Text>
               </TouchableOpacity>
@@ -119,7 +124,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </View>
           )}
 
-          <ScrollView style={styles.formScroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+          <ScrollView
+            style={styles.formScroll}
+            contentContainerStyle={styles.formScrollContent}
+            showsVerticalScrollIndicator={true}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+          >
             <Text style={styles.helpText}>
               Masukkan nomor identitas komputer Anda yang tertera di script PC Companion. Kolom di bawah bebas Anda edit kapan saja.
             </Text>
@@ -228,17 +239,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 Bisa dikosongkan. Otomatis dialihkan ke port WebSocket aman (8884) agar sinkron dengan port 1883 di PC.
               </Text>
             </View>
-          </ScrollView>
 
-          {/* Footer Actions */}
-          <View style={styles.modalFooter}>
-            <TouchableOpacity onPress={onClose} style={styles.cancelBtn}>
-              <Text style={styles.cancelBtnText}>Batal</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={handleSave} style={styles.saveBtn}>
-              <Text style={styles.saveBtnText}>Simpan Pengaturan</Text>
-            </TouchableOpacity>
-          </View>
+            {/* Footer Actions Langsung di Bawah Input (Bisa di-scroll kapan saja) */}
+            <View style={styles.modalFooter}>
+              <TouchableOpacity onPress={onClose} style={styles.cancelBtn}>
+                <Text style={styles.cancelBtnText}>Batal</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={handleSave} style={styles.saveBtn}>
+                <Text style={styles.saveBtnText}>Simpan Pengaturan</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
         </View>
       </KeyboardAvoidingView>
     </Modal>
@@ -257,8 +268,12 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 28,
     borderWidth: 1,
     borderColor: '#1e293b',
-    padding: 24,
-    maxHeight: '90%',
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: Platform.OS === 'ios' ? 30 : 12,
+    height: '92%',
+    display: 'flex',
+    flexDirection: 'column',
   },
   modalHeader: {
     flexDirection: 'row',
@@ -266,16 +281,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderBottomWidth: 1,
     borderBottomColor: '#1e293b',
-    paddingBottom: 14,
-    marginBottom: 16,
+    paddingBottom: 12,
+    marginBottom: 12,
   },
   headerRightBtns: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
+  kbdBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  kbdBtnText: {
+    color: '#38bdf8',
+    fontSize: 11,
+    fontWeight: '600',
+  },
   clearBtn: {
-    paddingHorizontal: 10,
+    paddingHorizontal: 8,
     paddingVertical: 6,
     borderRadius: 8,
     backgroundColor: 'rgba(239, 68, 68, 0.15)',
@@ -321,7 +349,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 10,
-    marginBottom: 14,
+    marginBottom: 12,
     gap: 8,
   },
   errorIcon: {
@@ -334,16 +362,19 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   formScroll: {
-    marginBottom: 16,
+    flex: 1,
+  },
+  formScrollContent: {
+    paddingBottom: 80,
   },
   helpText: {
     color: '#94a3b8',
     fontSize: 11,
     lineHeight: 16,
-    marginBottom: 16,
+    marginBottom: 14,
   },
   inputGroup: {
-    marginBottom: 16,
+    marginBottom: 14,
   },
   labelRow: {
     flexDirection: 'row',
@@ -384,7 +415,8 @@ const styles = StyleSheet.create({
   modalFooter: {
     flexDirection: 'row',
     gap: 12,
-    paddingTop: 12,
+    marginTop: 12,
+    paddingTop: 16,
     borderTopWidth: 1,
     borderTopColor: '#1e293b',
   },

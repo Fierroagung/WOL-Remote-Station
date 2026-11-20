@@ -203,17 +203,12 @@ export default function HomeScreen() {
       return;
     }
 
-    if (pcStatus === 'ONLINE') {
-      triggerToast('PC Sudah Online', 'Komputer Anda saat ini sudah menyala dan siap digunakan.', 'info');
-      return;
-    }
-
     setActiveTransition('waking');
 
     // 1. Kirim via Cloud MQTT (agar diterima HP Bridge di rumah)
     const mqttSent = await mqttClient.sendWakeCommand();
 
-    // 2. Kirim juga secara native UDP broadcast lokal (jika HP ini sedang di Wi-Fi rumah yang sama)
+    // 2. Kirim juga secara native UDP broadcast ganda lokal (Wi-Fi lokal subnet + 255.255.255.255)
     await WOLService.sendMagicPacket(stationConfig.macAddress, stationConfig.broadcastIp, 9);
 
     if (!mqttSent && !isCloudConnected) {

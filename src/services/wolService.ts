@@ -20,7 +20,15 @@ export class WOLService {
         return false;
       }
 
-      return await sendWakeOnLanNative(cleanMac, broadcastIp || '255.255.255.255', port);
+      const targetIp = (broadcastIp && broadcastIp.trim().length > 0) ? broadcastIp.trim() : '192.168.0.255';
+      const r1 = await sendWakeOnLanNative(cleanMac, targetIp, port);
+      // Transmisikan ganda ke universal 255.255.255.255 untuk menjamin lolos di semua model router
+      if (targetIp !== '255.255.255.255') {
+        try {
+          await sendWakeOnLanNative(cleanMac, '255.255.255.255', port);
+        } catch {}
+      }
+      return r1;
     } catch {
       return false;
     }
