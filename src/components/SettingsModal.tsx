@@ -310,7 +310,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#020617',
   },
-  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
