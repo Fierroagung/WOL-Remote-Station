@@ -5,7 +5,6 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  Modal,
   ScrollView,
   Platform,
   Keyboard,
@@ -35,8 +34,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [brokerUrl, setBrokerUrl] = useState(config.brokerUrl || '');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
 
-  // Sinkronisasi setiap kali pengaturan dibuka
+  // Sinkronisasi data setiap kali modal dibuka
   useEffect(() => {
     if (visible) {
       setStationName(config.stationName || '');
@@ -47,6 +47,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setErrorMessage(null);
     }
   }, [visible, config]);
+
+  // Pantau keyboard Android & iOS agar ScrollView otomatis memberikan ruang scroll
+  useEffect(() => {
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e) => setKeyboardHeight(e.endCoordinates.height)
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => setKeyboardHeight(0)
+    );
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, []);
 
   const handleGenerateKey = () => {
     const chars = Math.random().toString(36).substring(2, 6).toUpperCase();
@@ -112,6 +128,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   if (!visible) return null;
 
+  // Jika scanner dibuka dari tombol scan di pengaturan
   if (isScannerOpen) {
     return (
       <QRScannerModal
@@ -125,7 +142,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   return (
     <View style={styles.fullScreenWrapper}>
       <SafeAreaView style={styles.safeContainer} edges={['top', 'bottom', 'left', 'right']}>
-        {/* Top Header Navigation */}
+        {/* Top Header Navigation dengan Tombol Simpan Cepat Permanen */}
         <View style={styles.header}>
           <TouchableOpacity onPress={onClose} style={styles.backBtn} activeOpacity={0.7}>
             <Text style={styles.backBtnText}>← Kembali</Text>
@@ -134,8 +151,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <Text style={styles.headerKicker}>PENGATURAN PERANGKAT</Text>
             <Text style={styles.headerTitle}>Konfigurasi Stasiun PC</Text>
           </View>
-          <TouchableOpacity onPress={handleClearAll} style={styles.clearBtn} activeOpacity={0.7}>
-            <Text style={styles.clearBtnText}>Reset</Text>
+          <TouchableOpacity onPress={handleSave} style={styles.headerSaveBtn} activeOpacity={0.8}>
+            <Text style={styles.headerSaveBtnText}>✓ Simpan</Text>
           </TouchableOpacity>
         </View>
 
@@ -147,13 +164,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </View>
         )}
 
-        {/* Full-Page Native ScrollView */}
+        {/* Full-Page Native ScrollView dengan Dinamis Bottom Offset saat Keyboard Muncul */}
         <ScrollView
           style={styles.fullScrollView}
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[
+            styles.scrollContent,
+            { paddingBottom: keyboardHeight > 0 ? keyboardHeight + 100 : 120 },
+          ]}
           showsVerticalScrollIndicator={true}
           keyboardShouldPersistTaps="handled"
-          keyboardDismissMode="interactive"
+          keyboardDismissMode="on-drag"
         >
           {/* HERO BUTTON: QR SCANNER */}
           <TouchableOpacity
@@ -181,7 +201,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           {/* Input: Nama Komputer */}
           <View style={styles.inputGroup}>
-            <Text style={styles.inputLabel}>NAMA KOMPUTER (STATION LABEL)</Text>
+            <View style={styles.labelRow}>
+              <Text style={styles.inputLabel}>NAMA KOMPUTER (STATION LABEL)</Text>
+              <TouchableOpacity onPress={handleClearAll}>
+                <Text style={styles.resetLinkText}>Reset Semua</Text>
+              </TouchableOpacity>
+            </View>
             <TextInput
               style={styles.textInput}
               value={stationName}
@@ -284,7 +309,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </Text>
           </View>
 
-          {/* Action Buttons */}
+          {/* Tombol Tutup Keyboard jika Keyboard sedang Aktif */}
+          {keyboardHeight > 0 && (
+            <TouchableOpacity
+              onPress={() => Keyboard.dismiss()}
+              style={styles.dismissKeyboardBtn}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.dismissKeyboardText}>Selesai Mengetik (Tutup Keyboard) ▾</Text>
+            </TouchableOpacity>
+          )}
+
+          {/* Action Buttons di Bawah */}
           <View style={styles.actionRow}>
             <TouchableOpacity onPress={onClose} style={styles.cancelBtn} activeOpacity={0.7}>
               <Text style={styles.cancelBtnText}>Batal</Text>
@@ -294,8 +330,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </TouchableOpacity>
           </View>
 
-          {/* Ruang ekstra agar scroll sangat leluasa meluncur sampai bawah */}
-          <View style={{ height: 120 }} />
+          <View style={{ height: 40 }} />
         </ScrollView>
       </SafeAreaView>
     </View>
@@ -316,7 +351,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingVertical: 12,
     backgroundColor: '#0b0f19',
     borderBottomWidth: 1,
     borderBottomColor: '#1e293b',
@@ -347,18 +382,26 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginTop: 2,
   },
-  clearBtn: {
+  headerSaveBtn: {
     paddingVertical: 8,
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     borderRadius: 8,
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.3)',
+    backgroundColor: '#4f46e5',
+    shadowColor: '#4f46e5',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
+    elevation: 3,
   },
-  clearBtnText: {
+  headerSaveBtnText: {
+    color: '#ffffff',
+    fontWeight: 'bold',
+    fontSize: 13,
+  },
+  resetLinkText: {
     color: '#f87171',
+    fontSize: 11,
     fontWeight: '600',
-    fontSize: 12,
   },
   errorBox: {
     flexDirection: 'row',
@@ -495,10 +538,24 @@ const styles = StyleSheet.create({
     marginTop: 6,
     lineHeight: 16,
   },
+  dismissKeyboardBtn: {
+    alignItems: 'center',
+    paddingVertical: 10,
+    marginBottom: 14,
+    backgroundColor: '#1e293b',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  dismissKeyboardText: {
+    color: '#38bdf8',
+    fontSize: 12,
+    fontWeight: '600',
+  },
   actionRow: {
     flexDirection: 'row',
     gap: 12,
-    marginTop: 10,
+    marginTop: 6,
     marginBottom: 20,
   },
   cancelBtn: {

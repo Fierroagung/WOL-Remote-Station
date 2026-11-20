@@ -197,18 +197,18 @@ export default function HomeScreen() {
   };
 
   const handleDirectScanSuccess = (scanned: Partial<StationConfig>) => {
-    if (scanned.stationKey && scanned.macAddress) {
+    if (scanned.stationKey) {
       const newConfig: StationConfig = {
-        stationName: scanned.stationName || 'RIG-STATION-PRO',
+        stationName: scanned.stationName || stationConfig.stationName || 'RIG-STATION-PRO',
         stationKey: scanned.stationKey.trim(),
-        macAddress: scanned.macAddress.trim().toUpperCase(),
-        broadcastIp: scanned.broadcastIp || '192.168.0.255',
-        brokerUrl: sanitizeBrokerUrl(scanned.brokerUrl || 'broker.hivemq.com'),
+        macAddress: (scanned.macAddress || stationConfig.macAddress || '').trim().toUpperCase(),
+        broadcastIp: scanned.broadcastIp || stationConfig.broadcastIp || '192.168.0.255',
+        brokerUrl: sanitizeBrokerUrl(scanned.brokerUrl || stationConfig.brokerUrl || 'broker.hivemq.com'),
       };
       handleSaveConfig(newConfig);
       setIsDirectScannerOpen(false);
       setIsSettingsOpen(false);
-      triggerToast('Pairing PC Berhasil!', `Stasiun ${newConfig.stationName} siap dikontrol.`, 'success');
+      triggerToast('Pairing PC Berhasil!', `Stasiun ${newConfig.stationKey} terhubung.`, 'success');
     }
   };
 
