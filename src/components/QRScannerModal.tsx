@@ -1,14 +1,18 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   View,
   Text,
   TouchableOpacity,
-  useWindowDimensions,
-  Platform,
+  ActivityIndicator,
+  Alert,
+  Linking,
+  Vibration,
+  Animated,
+  Easing,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { CameraView, useCameraPermissions } from 'expo-camera';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { CameraView, useCameraPermissions, BarcodeScanningResult } from 'expo-camera';
 import { CyberColors } from '../theme/colors';
 import { StationConfig } from '../services/mqttService';
 
@@ -23,58 +27,154 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
   onClose,
   onScanSuccess,
 }) => {
-  const { width, height } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
   const [permission, requestPermission] = useCameraPermissions();
-  const [isScanned, setIsScanned] = useState(false);
-  const [torch, setTorch] = useState(false);
+  const [torch, setTorch] = useState<boolean>(false);
+  const isProcessingRef = useRef<boolean>(false);
+
+  // Animasi Laser Bar Scanner Naik-Turun
+  const scanLineAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (visible) {
+      isProcessingRef.current = false;
+      const scanLoop = Animated.loop(
+        Animated.sequence([
+          Animated.timing(scanLineAnim, {
+            toValue: 240,
+            duration: 1800,
+            easing: Easing.inOut(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(scanLineAnim, {
+            toValue: 0,
+            duration: 1800,
+            easing: Easing.inOut(Easing.quad),
+            useNativeDriver: true,
+          }),
+        ])
+      );
+      scanLoop.start();
+      return () => scanLoop.stop();
+    }
+  }, [visible]);
 
   if (!visible) return null;
 
-  const handleBarcodeScanned = ({ data }: { data: string }) => {
-    if (isScanned) return;
-    setIsScanned(true);
+  const handleBarcodeScanned = (scanningResult: BarcodeScanningResult) => {
+    // Sinkronisasi kunci instan agar tidak dobel-trigger antar frame 60fps
+    if (isProcessingRef.current) return;
+    isProcessingRef.current = true;
+
+    const data = scanningResult?.data;
+    if (!data || typeof data !== 'string') {
+      isProcessingRef.current = false;
+      return;
+    }
 
     try {
-      // 1. Coba parse JSON payload resmi dari WOL Companion GUI PC
-      const parsed = JSON.parse(data);
+      // 1. Coba parse JSON payload resmi (mendukung camelCase & snake_case)
+      const parsed = JSON.parse(data.trim());
       if (parsed && typeof parsed === 'object') {
-        const result: Partial<StationConfig> = {
-          stationName: parsed.stationName || parsed.name || 'RIG-STATION-PRO',
-          stationKey: parsed.stationKey || parsed.key || '',
-          macAddress: parsed.macAddress || parsed.mac || '',
-          broadcastIp: parsed.broadcastIp || parsed.ip || '192.168.0.255',
-          brokerUrl: parsed.mqttBroker || parsed.broker || 'broker.hivemq.com',
-        };
-        onScanSuccess(result);
-        onClose();
-        return;
+        const stationName = parsed.stationName || parsed.station_name || parsed.name || 'RIG-STATION-PRO';
+        const stationKey = parsed.stationKey || parsed.station_key || parsed.key || '';
+        const macAddress = parsed.macAddress || parsed.mac_address || parsed.mac || '';
+        const broadcastIp = parsed.broadcastIp || parsed.broadcast_ip || parsed.ip || '192.168.0.255';
+        const brokerUrl = parsed.mqttBroker || parsed.brokerUrl || parsed.broker_host || parsed.broker || 'broker.hivemq.com';
+
+        if (stationKey || macAddress) {
+          try {
+            Vibration.vibrate(80);
+          } catch {}
+
+          onScanSuccess({
+            stationName: String(stationName).trim(),
+            stationKey: String(stationKey).trim(),
+            macAddress: String(macAddress).trim().toUpperCase(),
+            broadcastIp: String(broadcastIp).trim(),
+            brokerUrl: String(brokerUrl).trim(),
+          });
+          onClose();
+          return;
+        }
       }
     } catch {
-      // 2. Fallback jika berupa teks biasa (misalnya hanya Station Key: WOL-XXXX-PC)
-      if (data && data.trim().startsWith('WOL-')) {
-        onScanSuccess({ stationKey: data.trim() });
+      // 2. Fallback jika berupa teks biasa (misalnya hanya teks Station Key: WOL-XXXX-PC)
+      const trimmed = data.trim();
+      if (trimmed.startsWith('WOL-') || trimmed.includes('-PC')) {
+        try {
+          Vibration.vibrate(80);
+        } catch {}
+
+        onScanSuccess({ stationKey: trimmed });
         onClose();
         return;
       }
     }
 
-    alert('Format QR Code tidak dikenali. Pastikan Anda memindai QR Code dari aplikasi WOL Remote Station di PC.');
-    setTimeout(() => setIsScanned(false), 2000);
+    // Jika format tidak dikenali
+    Alert.alert(
+      'QR Code Tidak Dikenali',
+      'Format kode QR yang dipindai bukan dari aplikasi WOL Remote Station PC.\n\nBuka aplikasi Desktop di PC Anda untuk melihat QR Code yang valid.',
+      [
+        {
+          text: 'Pindai Lagi',
+          onPress: () => {
+            isProcessingRef.current = false;
+          },
+        },
+        {
+          text: 'Tutup',
+          style: 'cancel',
+          onPress: onClose,
+        },
+      ]
+    );
   };
 
-  // Jika izin kamera belum diberikan
-  if (!permission?.granted) {
+  // 1. Menunggu status izin kamera (mencegah flickering layar izin)
+  if (!permission) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color={CyberColors.neonCyan} />
+        <Text style={styles.loadingText}>Menyiapkan Pemindai Kamera...</Text>
+      </View>
+    );
+  }
+
+  // 2. Jika izin kamera belum diberikan atau ditolak
+  if (!permission.granted) {
+    const isPermanentlyDenied = !permission.canAskAgain;
+
     return (
       <View style={styles.container}>
         <SafeAreaView style={styles.permissionBox} edges={['top', 'bottom', 'left', 'right']}>
           <Text style={styles.permissionIcon}>📷</Text>
-          <Text style={styles.permissionTitle}>Izin Kamera Diperlukan</Text>
+          <Text style={styles.permissionTitle}>Izin Akses Kamera Diperlukan</Text>
           <Text style={styles.permissionDesc}>
-            Aplikasi memerlukan akses kamera untuk memindai kode QR stasiun PC Anda secara instan dan otomatis tanpa perlu mengetik manual.
+            {isPermanentlyDenied
+              ? 'Izin kamera sebelumnya ditolak di pengaturan perangkat Anda. Silakan aktifkan izin kamera secara manual untuk menggunakan fitur pemindai QR Code.'
+              : 'Aplikasi memerlukan akses kamera untuk memindai kode QR stasiun PC Anda secara instan dan otomatis tanpa perlu mengetik manual.'}
           </Text>
-          <TouchableOpacity style={styles.grantBtn} onPress={requestPermission} activeOpacity={0.8}>
-            <Text style={styles.grantBtnText}>Berikan Izin Kamera</Text>
-          </TouchableOpacity>
+
+          {isPermanentlyDenied ? (
+            <TouchableOpacity
+              style={styles.grantBtn}
+              onPress={() => Linking.openSettings()}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.grantBtnText}>⚙️ Buka Pengaturan HP</Text>
+            </TouchableOpacity>
+          ) : (
+            <TouchableOpacity
+              style={styles.grantBtn}
+              onPress={requestPermission}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.grantBtnText}>✓ Berikan Izin Kamera</Text>
+            </TouchableOpacity>
+          )}
+
           <TouchableOpacity style={styles.cancelLink} onPress={onClose} activeOpacity={0.7}>
             <Text style={styles.cancelLinkText}>Batal / Kembali</Text>
           </TouchableOpacity>
@@ -83,44 +183,83 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
     );
   }
 
-  // Tampilan Utama Pemindai Kamera
+  // 3. Tampilan Utama Pemindai Kamera Aktif
   return (
     <View style={styles.container}>
-      {/* 1. CameraView menempati 100% layar tanpa terpotong container anak */}
+      {/* Native Camera View Full Screen */}
       <CameraView
-        style={[styles.cameraView, { width, height }]}
+        style={StyleSheet.absoluteFill}
         facing="back"
         enableTorch={torch}
         barcodeScannerSettings={{
           barcodeTypes: ['qr'],
         }}
-        onBarcodeScanned={isScanned ? undefined : handleBarcodeScanned}
+        onBarcodeScanned={handleBarcodeScanned}
       />
 
-      {/* 2. Lapisan Overlay UI (Transparan Penuh, Touch Event tembus ke bawah kecuali tombol) */}
-      <SafeAreaView style={styles.overlayContainer} pointerEvents="box-none" edges={['top', 'bottom', 'left', 'right']}>
-        {/* Header Bar */}
-        <View style={styles.header}>
-          <TouchableOpacity onPress={onClose} style={styles.closeBtn} activeOpacity={0.7}>
-            <Text style={styles.closeBtnText}>← Kembali</Text>
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>PINDAI QR CODE PC</Text>
-          <TouchableOpacity
-            onPress={() => setTorch(!torch)}
-            style={[styles.torchBtn, torch && styles.torchBtnActive]}
-            activeOpacity={0.7}
-          >
-            <Text style={styles.torchBtnText}>{torch ? '🔦 ON' : '💡 Senter'}</Text>
-          </TouchableOpacity>
+      {/* Lapisan UI Overlay */}
+      <View style={styles.overlayContainer} pointerEvents="box-none">
+        {/* Header Bar Penuh & Luwes (Termasuk Status Bar / Notch) */}
+        <View style={[styles.headerWrapper, { paddingTop: Math.max(insets.top, 14) }]}>
+          <View style={styles.header}>
+            {/* Tombol Kembali Lebih Luas & Haptic */}
+            <TouchableOpacity
+              onPress={() => {
+                try {
+                  Vibration.vibrate(25);
+                } catch {}
+                onClose();
+              }}
+              style={styles.closeBtn}
+              activeOpacity={0.7}
+              hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
+            >
+              <Text style={styles.closeBtnText}>← Kembali</Text>
+            </TouchableOpacity>
+
+            {/* Judul Tengah dengan Subtitle Status */}
+            <View style={styles.headerTitleBox}>
+              <Text style={styles.headerTitle}>PINDAI QR PC</Text>
+              <Text style={styles.headerSubtitle}>KAMERA AKTIF</Text>
+            </View>
+
+            {/* Tombol Senter Lebih Luas, Rapi & Haptic */}
+            <TouchableOpacity
+              onPress={() => {
+                try {
+                  Vibration.vibrate(30);
+                } catch {}
+                setTorch((prev) => !prev);
+              }}
+              style={[styles.torchBtn, torch && styles.torchBtnActive]}
+              activeOpacity={0.7}
+              hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
+            >
+              <Text style={[styles.torchBtnText, torch && styles.torchBtnTextActive]}>
+                {torch ? '🔦 Nyala' : '💡 Senter'}
+              </Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
-        {/* Viewfinder Target Reticle */}
+        {/* Viewfinder Reticle dengan Garis Laser Bergerak */}
         <View style={styles.reticleContainer} pointerEvents="none">
           <View style={styles.scanTarget}>
+            {/* 4 Sudut Glowing Cyan */}
             <View style={[styles.corner, styles.cornerTL]} />
             <View style={[styles.corner, styles.cornerTR]} />
             <View style={[styles.corner, styles.cornerBL]} />
             <View style={[styles.corner, styles.cornerBR]} />
+
+            {/* Animasi Garis Laser Pemindai */}
+            <Animated.View
+              style={[
+                styles.scanLaser,
+                {
+                  transform: [{ translateY: scanLineAnim }],
+                },
+              ]}
+            />
           </View>
           <Text style={styles.instructionText}>
             Arahkan kamera ke QR Code di layar PC Anda
@@ -128,12 +267,12 @@ export const QRScannerModal: React.FC<QRScannerModalProps> = ({
         </View>
 
         {/* Bottom Helper Bar */}
-        <View style={styles.bottomBar} pointerEvents="none">
+        <View style={[styles.bottomBar, { paddingBottom: Math.max(insets.bottom, 20) }]} pointerEvents="none">
           <Text style={styles.bottomTipText}>
-            Buka aplikasi Desktop "WOL Remote Station" di PC Anda untuk menampilkan kode QR
+            Buka aplikasi "WOL Remote Station" di PC Windows untuk melihat kode QR
           </Text>
         </View>
-      </SafeAreaView>
+      </View>
     </View>
   );
 };
@@ -142,58 +281,105 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000000',
-    position: 'relative',
   },
-  cameraView: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
+  loadingContainer: {
+    flex: 1,
+    backgroundColor: '#020617',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  loadingText: {
+    color: '#94a3b8',
+    fontSize: 14,
+    marginTop: 16,
+    fontWeight: '600',
   },
   overlayContainer: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'transparent',
+    ...StyleSheet.absoluteFill,
     justifyContent: 'space-between',
   },
+  headerWrapper: {
+    backgroundColor: 'rgba(15, 23, 42, 0.96)',
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
+    width: '100%',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 6,
+  },
   header: {
-    height: 56,
+    minHeight: 62,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    backgroundColor: 'rgba(15, 23, 42, 0.85)',
-    borderBottomWidth: 1,
-    borderBottomColor: '#1e293b',
+    paddingVertical: 8,
   },
   closeBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 20,
     backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 2,
   },
   closeBtnText: {
     color: '#38bdf8',
-    fontWeight: '600',
-    fontSize: 14,
+    fontWeight: '700',
+    fontSize: 13,
+    letterSpacing: 0.3,
+  },
+  headerTitleBox: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    flex: 1,
+    paddingHorizontal: 8,
   },
   headerTitle: {
     color: '#f8fafc',
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: 'bold',
     letterSpacing: 1,
   },
+  headerSubtitle: {
+    color: CyberColors.neonCyan,
+    fontSize: 9,
+    fontFamily: 'monospace',
+    letterSpacing: 1.2,
+    marginTop: 2,
+  },
   torchBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 20,
     backgroundColor: '#1e293b',
+    borderWidth: 1,
+    borderColor: '#334155',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 2,
   },
   torchBtnActive: {
     backgroundColor: '#ca8a04',
+    borderColor: '#eab308',
   },
   torchBtnText: {
     color: '#fef08a',
     fontWeight: 'bold',
     fontSize: 13,
+  },
+  torchBtnTextActive: {
+    color: '#ffffff',
   },
   reticleContainer: {
     alignItems: 'center',
@@ -201,10 +387,24 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scanTarget: {
-    width: 270,
-    height: 270,
+    width: 260,
+    height: 260,
     position: 'relative',
     backgroundColor: 'transparent',
+    overflow: 'hidden',
+  },
+  scanLaser: {
+    position: 'absolute',
+    left: 8,
+    right: 8,
+    top: 0,
+    height: 2.5,
+    backgroundColor: CyberColors.neonCyan,
+    shadowColor: CyberColors.neonCyan,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.9,
+    shadowRadius: 6,
+    elevation: 4,
   },
   corner: {
     position: 'absolute',
@@ -238,12 +438,12 @@ const styles = StyleSheet.create({
   },
   instructionText: {
     color: '#ffffff',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
-    marginTop: 32,
+    marginTop: 28,
     textAlign: 'center',
     paddingHorizontal: 20,
-    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+    backgroundColor: 'rgba(15, 23, 42, 0.88)',
     paddingVertical: 10,
     borderRadius: 20,
     borderWidth: 1,
@@ -251,15 +451,15 @@ const styles = StyleSheet.create({
   },
   bottomBar: {
     paddingHorizontal: 24,
-    paddingBottom: 24,
+    paddingBottom: 20,
     alignItems: 'center',
   },
   bottomTipText: {
     color: '#94a3b8',
     fontSize: 11,
     textAlign: 'center',
-    backgroundColor: 'rgba(15, 23, 42, 0.75)',
-    paddingHorizontal: 14,
+    backgroundColor: 'rgba(15, 23, 42, 0.8)',
+    paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 12,
   },
@@ -278,14 +478,15 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 18,
     fontWeight: 'bold',
-    marginBottom: 8,
+    marginBottom: 10,
+    textAlign: 'center',
   },
   permissionDesc: {
     color: '#94a3b8',
     fontSize: 14,
     textAlign: 'center',
-    lineHeight: 20,
-    marginBottom: 24,
+    lineHeight: 22,
+    marginBottom: 28,
   },
   grantBtn: {
     backgroundColor: '#4f46e5',
@@ -293,6 +494,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 28,
     borderRadius: 12,
     marginBottom: 16,
+    shadowColor: '#4f46e5',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 4,
   },
   grantBtnText: {
     color: '#ffffff',

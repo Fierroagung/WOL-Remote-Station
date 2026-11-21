@@ -45,6 +45,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setBroadcastIp(config.broadcastIp || '');
       setBrokerUrl(config.brokerUrl || '');
       setErrorMessage(null);
+      setIsScannerOpen(false);
     }
   }, [visible, config]);
 
@@ -107,6 +108,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleScanSuccess = (scanned: Partial<StationConfig>) => {
+    setIsScannerOpen(false);
     if (scanned.stationName) setStationName(scanned.stationName);
     if (scanned.stationKey) setStationKey(scanned.stationKey);
     if (scanned.macAddress) setMacAddress(scanned.macAddress);
@@ -114,13 +116,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (scanned.brokerUrl) setBrokerUrl(scanned.brokerUrl);
 
     // Jika scan berhasil dan memiliki key & mac, otomatis simpan langsung!
-    if (scanned.stationKey && scanned.macAddress) {
+    const effectiveKey = scanned.stationKey || stationKey;
+    const effectiveMac = scanned.macAddress || macAddress;
+
+    if (effectiveKey && effectiveMac) {
       onSave({
-        stationName: scanned.stationName || 'RIG-STATION-PRO',
-        stationKey: scanned.stationKey.trim(),
-        macAddress: scanned.macAddress.trim().toUpperCase(),
-        broadcastIp: scanned.broadcastIp || '192.168.0.255',
-        brokerUrl: sanitizeBrokerUrl(scanned.brokerUrl || 'broker.hivemq.com'),
+        stationName: (scanned.stationName || stationName || 'RIG-STATION-PRO').trim(),
+        stationKey: effectiveKey.trim(),
+        macAddress: effectiveMac.trim().toUpperCase(),
+        broadcastIp: (scanned.broadcastIp || broadcastIp || '192.168.0.255').trim(),
+        brokerUrl: sanitizeBrokerUrl(scanned.brokerUrl || brokerUrl || 'broker.hivemq.com'),
       });
       onClose();
     }

@@ -1,5 +1,6 @@
 export const CyberColors = {
   bgDeep: '#020617',
+  oledBlack: '#000000',
   cardBg: '#0f172a',
   cardBorder: '#1e293b',
   cardBorderHover: '#334155',

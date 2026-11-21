@@ -21,6 +21,7 @@ import {
   PowerAction,
   StationConfig,
   EMPTY_STATION_CONFIG,
+  DEFAULT_STATION_CONFIG,
   sanitizeBrokerUrl,
 } from '../services/mqttService';
 import { StorageService } from '../services/storageService';
@@ -33,14 +34,14 @@ export default function HomeScreen() {
   const isLandscape = width > height;
   const isTablet = Math.min(width, height) >= 600;
 
-  // State Konfigurasi Stasiun (Universal - Default Kosong)
-  const [stationConfig, setStationConfig] = useState<StationConfig>(EMPTY_STATION_CONFIG);
+  // State Konfigurasi Stasiun (Universal - Default Terisi Stasiun PC)
+  const [stationConfig, setStationConfig] = useState<StationConfig>(DEFAULT_STATION_CONFIG);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isDirectScannerOpen, setIsDirectScannerOpen] = useState<boolean>(false);
 
   // State Manajemen Daya & Peran
   const [role, setRole] = useState<AppRole>('controller');
-  const [pcStatus, setPcStatus] = useState<PCStatus>('UNCONFIGURED');
+  const [pcStatus, setPcStatus] = useState<PCStatus>('ONLINE');
   const [isCloudConnected, setIsCloudConnected] = useState<boolean>(false);
   const [activeTransition, setActiveTransition] = useState<PowerAction | 'waking' | null>(null);
   const [isBridgeRunning, setIsBridgeRunning] = useState<boolean>(true);
@@ -96,20 +97,17 @@ export default function HomeScreen() {
         const stored = await StorageService.getItem('wol_station_config');
         if (stored) {
           const parsed = JSON.parse(stored) as StationConfig;
-          if (parsed) {
+          if (parsed && parsed.stationKey && parsed.stationKey.trim().length > 0) {
             setStationConfig(parsed);
-            if (parsed.stationKey && parsed.stationKey.trim().length > 0) {
-              mqttClient.updateConfig(parsed);
-            } else {
-              setPcStatus('UNCONFIGURED');
-            }
+            mqttClient.updateConfig(parsed);
+            return;
           }
-        } else {
-          setPcStatus('UNCONFIGURED');
         }
-      } catch {
-        setPcStatus('UNCONFIGURED');
-      }
+      } catch {}
+
+      // Default terhubung ke PC workstation lokal
+      setStationConfig(DEFAULT_STATION_CONFIG);
+      mqttClient.updateConfig(DEFAULT_STATION_CONFIG);
     };
     loadStoredConfig();
 
@@ -197,18 +195,21 @@ export default function HomeScreen() {
   };
 
   const handleDirectScanSuccess = (scanned: Partial<StationConfig>) => {
-    if (scanned.stationKey) {
+    const effectiveKey = scanned.stationKey || stationConfig.stationKey;
+    const effectiveMac = scanned.macAddress || stationConfig.macAddress;
+
+    if (effectiveKey || effectiveMac) {
       const newConfig: StationConfig = {
-        stationName: scanned.stationName || stationConfig.stationName || 'RIG-STATION-PRO',
-        stationKey: scanned.stationKey.trim(),
-        macAddress: (scanned.macAddress || stationConfig.macAddress || '').trim().toUpperCase(),
-        broadcastIp: scanned.broadcastIp || stationConfig.broadcastIp || '192.168.0.255',
+        stationName: (scanned.stationName || stationConfig.stationName || 'RIG-STATION-PRO').trim(),
+        stationKey: (effectiveKey || '').trim(),
+        macAddress: (effectiveMac || '').trim().toUpperCase(),
+        broadcastIp: (scanned.broadcastIp || stationConfig.broadcastIp || '192.168.0.255').trim(),
         brokerUrl: sanitizeBrokerUrl(scanned.brokerUrl || stationConfig.brokerUrl || 'broker.hivemq.com'),
       };
       handleSaveConfig(newConfig);
       setIsDirectScannerOpen(false);
       setIsSettingsOpen(false);
-      triggerToast('Pairing PC Berhasil!', `Stasiun ${newConfig.stationKey} terhubung.`, 'success');
+      triggerToast('Pairing PC Berhasil!', `Stasiun ${newConfig.stationKey || newConfig.macAddress} terhubung.`, 'success');
     }
   };
 
@@ -254,13 +255,8 @@ export default function HomeScreen() {
     }
 
     if (!isCloudConnected) {
-      triggerToast('Gagal: Cloud Terputus', 'Ponsel belum terhubung ke Cloud MQTT. Periksa koneksi internet Anda.', 'danger');
-      return;
-    }
-
-    if (pcStatus === 'OFFLINE' || pcStatus === 'UNCONFIGURED') {
-      triggerToast('PC Sedang Mati / Offline', 'Perintah daya hanya bisa dieksekusi saat komputer sedang ON. Gunakan tombol WAKE UP untuk menyalakan.', 'danger');
-      return;
+      triggerToast('Mencoba Menghubungkan...', 'Ponsel sedang menghubungkan ulang ke Cloud MQTT...', 'info');
+      mqttClient.reconnect();
     }
 
     setActiveTransition(action);
@@ -446,7 +442,7 @@ export default function HomeScreen() {
               <StatusCard status={pcStatus} activeTransition={activeTransition} />
               <PowerGrid
                 onAction={handlePowerAction}
-                disabled={!!activeTransition || pcStatus === 'UNCONFIGURED'}
+                disabled={!!activeTransition}
                 compact={!isTablet}
               />
 
@@ -478,7 +474,7 @@ export default function HomeScreen() {
 
             <PowerGrid
               onAction={handlePowerAction}
-              disabled={!!activeTransition || pcStatus === 'UNCONFIGURED'}
+              disabled={!!activeTransition}
             />
 
             <View style={styles.footerBar}>

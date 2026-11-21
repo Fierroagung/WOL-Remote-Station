@@ -16,13 +16,15 @@ export interface StationConfig {
   brokerUrl: string;
 }
 
-export const EMPTY_STATION_CONFIG: StationConfig = {
-  stationName: '',
-  stationKey: '',
-  macAddress: '',
-  broadcastIp: '',
-  brokerUrl: '',
+export const DEFAULT_STATION_CONFIG: StationConfig = {
+  stationName: 'DESKTOP-FIERRO',
+  stationKey: 'WOL-45KR-PC',
+  macAddress: '9C:71:C4:11:44:13',
+  broadcastIp: '192.168.0.255',
+  brokerUrl: 'wss://broker.hivemq.com:8884/mqtt',
 };
+
+export const EMPTY_STATION_CONFIG: StationConfig = { ...DEFAULT_STATION_CONFIG };
 
 export const DEFAULT_BROKER_WS = 'wss://broker.hivemq.com:8884/mqtt';
 
@@ -267,7 +269,7 @@ class MQTTService {
       return true;
     } catch {
       try {
-        this.ws.send(packet.buffer);
+        this.ws.send(packet.buffer as ArrayBuffer);
         return true;
       } catch {
         return false;
@@ -518,8 +520,9 @@ class MQTTService {
       }
 
       const topic = this.getTopicControl();
+      const upperAction = action.toUpperCase();
       const payload = JSON.stringify({
-        action: action,
+        action: upperAction,
         stationKey: this.config.stationKey,
         timestamp: Math.floor(Date.now() / 1000),
       });
@@ -528,10 +531,10 @@ class MQTTService {
         const packet = buildPublishPacket(topic, payload);
         const ok = this.sendPacket(packet);
         if (ok) {
-          this.addLog(`[KONTROL TERKIRIM] Perintah ${action.toUpperCase()} dikirim ke stasiun ${this.config.stationKey}`);
+          this.addLog(`[KONTROL TERKIRIM] Perintah ${upperAction} dikirim ke stasiun ${this.config.stationKey}`);
           resolve(true);
         } else {
-          this.addLog(`[ERROR KONTROL] Gagal mengirim ${action.toUpperCase()}`);
+          this.addLog(`[ERROR KONTROL] Gagal mengirim ${upperAction}`);
           resolve(false);
         }
       } catch (e) {
