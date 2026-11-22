@@ -20,7 +20,6 @@ import {
   PCStatus,
   PowerAction,
   StationConfig,
-  EMPTY_STATION_CONFIG,
   DEFAULT_STATION_CONFIG,
   sanitizeBrokerUrl,
 } from '../services/mqttService';
@@ -41,17 +40,19 @@ export default function HomeScreen() {
 
   // State Manajemen Daya & Peran
   const [role, setRole] = useState<AppRole>('controller');
-  const [pcStatus, setPcStatus] = useState<PCStatus>('ONLINE');
+  const [pcStatus, setPcStatus] = useState<PCStatus>('OFFLINE');
   const [isCloudConnected, setIsCloudConnected] = useState<boolean>(false);
+  const [isGatewayActive, setIsGatewayActive] = useState<boolean>(false);
   const [activeTransition, setActiveTransition] = useState<PowerAction | 'waking' | null>(null);
   const [isBridgeRunning, setIsBridgeRunning] = useState<boolean>(true);
   const [logs, setLogs] = useState<string[]>([
-    '[INIT] WOL Remote Station dimulai.',
+    '[INIT] WOL Remote Station siap.',
   ]);
 
-  // Awaiting timer ref for real hardware sync
   const actionTimeoutRef = useRef<any>(null);
   const wakeTimeoutRef = useRef<any>(null);
+  const pingIntervalRef = useRef<any>(null);
+  const heartbeatIntervalRef = useRef<any>(null);
 
   // Toast Notification State
   const [toastMessage, setToastMessage] = useState<{
@@ -82,18 +83,24 @@ export default function HomeScreen() {
     ]).start(() => setToastMessage(null));
   };
 
-  // Refs for persistent event listeners without teardown
   const roleRef = useRef<AppRole>(role);
   roleRef.current = role;
   const isBridgeRunningRef = useRef<boolean>(isBridgeRunning);
   isBridgeRunningRef.current = isBridgeRunning;
   const stationConfigRef = useRef<StationConfig>(stationConfig);
   stationConfigRef.current = stationConfig;
+  const pcStatusRef = useRef<PCStatus>(pcStatus);
+  pcStatusRef.current = pcStatus;
 
+  // 1. Muat konfigurasi tersimpan
   useEffect(() => {
-    // 1. Muat konfigurasi tersimpan dari storage permanen
     const loadStoredConfig = async () => {
       try {
+        const storedRole = await StorageService.getItem('wol_app_role');
+        if (storedRole === 'controller' || storedRole === 'bridge') {
+          setRole(storedRole);
+        }
+
         const stored = await StorageService.getItem('wol_station_config');
         if (stored) {
           const parsed = JSON.parse(stored) as StationConfig;
@@ -105,72 +112,117 @@ export default function HomeScreen() {
         }
       } catch {}
 
-      // Default terhubung ke PC workstation lokal
       setStationConfig(DEFAULT_STATION_CONFIG);
       mqttClient.updateConfig(DEFAULT_STATION_CONFIG);
     };
     loadStoredConfig();
 
-    // 2. Listener status real-time dari PC
-    const unsubStatus = mqttClient.onStatusChange((status, rawData) => {
+    // Listener Status PC
+    const unsubStatus = mqttClient.onStatusChange((status) => {
       setPcStatus(status);
 
-      // Verifikasi respons real-time PC untuk membatalkan timer timeout
       if (actionTimeoutRef.current) {
         clearTimeout(actionTimeoutRef.current);
         actionTimeoutRef.current = null;
         setActiveTransition(null);
 
         if (status === 'SLEEPING') {
-          triggerToast('PC Berhasil Masuk Sleep', 'Windows mengonfirmasi mode hemat daya (Suspend S3).', 'info');
+          triggerToast('PC Masuk Sleep', 'Konfirmasi: Windows memasuki Suspend (S3).', 'info');
         } else if (status === 'OFFLINE') {
-          triggerToast('PC Berhasil Dimatikan', 'Koneksi Windows terputus (Shutdown/Hibernasi terkonfirmasi).', 'danger');
+          triggerToast('PC Dimatikan', 'Konfirmasi: PC terputus / mati.', 'danger');
         } else if (status === 'ONLINE') {
-          triggerToast('PC Online Kembali', 'Windows Companion aktif dan terhubung.', 'success');
+          triggerToast('PC Telah Online', 'Konfirmasi: Windows Companion aktif.', 'success');
         }
       }
 
-      // Verifikasi respons Wake Up
       if (wakeTimeoutRef.current && status === 'ONLINE') {
         clearTimeout(wakeTimeoutRef.current);
         wakeTimeoutRef.current = null;
         setActiveTransition(null);
-        triggerToast('PC Berhasil Menyala!', 'Sinyal terkonfirmasi dari Windows Service (Boot Online OK).', 'success');
+        triggerToast('PC Berhasil Menyala!', 'Sinyal terkonfirmasi dari HP Gateway & PC (Boot Online OK).', 'success');
       }
     });
 
-    // 3. Listener koneksi broker
+    // Listener Koneksi Broker
     const unsubConn = mqttClient.onConnectionChange((connected) => {
       setIsCloudConnected(connected);
     });
 
-    // 4. Listener log
+    // Listener Gateway Status (Khusus HP Utama)
+    const unsubGateway = mqttClient.onGatewayStatus((alive, lastPcStatus) => {
+      setIsGatewayActive(alive);
+      if (lastPcStatus) {
+        setPcStatus(lastPcStatus);
+      }
+    });
+
+    // Listener ACK dari Gateway saat Magic Packet ditembakkan
+    const unsubAck = mqttClient.onAckReceived((ackData) => {
+      if (roleRef.current === 'controller') {
+        triggerToast('Sinyal Diteruskan Gateway', 'HP di rumah berhasil menembakkan Magic Packet ke kabel LAN PC.', 'info');
+      }
+    });
+
+    // Listener Log
     const unsubLog = mqttClient.onLog((newLog) => {
       setLogs((prev) => [newLog, ...prev.slice(0, 19)]);
     });
 
-    // 5. Listener Sinyal Wake (Khusus Mode Bridge)
+    // Listener Sinyal Wake (Khusus HP Kedua / Bridge Mode)
     const unsubWake = mqttClient.onWakeReceived(async (wakeData) => {
       if (roleRef.current === 'bridge' && isBridgeRunningRef.current) {
-        setLogs((prev) => [
-          `[WAKE RELAY] Sinyal diterima dari HP Remote. Memancarkan Magic Packet ke ${wakeData.broadcastIp || '255.255.255.255'}...`,
-          ...prev.slice(0, 19),
-        ]);
-
         const targetMac = wakeData.targetMac || stationConfigRef.current.macAddress;
         const targetBroadcast = wakeData.broadcastIp || stationConfigRef.current.broadcastIp;
+
+        setLogs((prev) => [
+          `[WAKE GATEWAY] Menerima sinyal dari HP Utama. Memancarkan Magic Packet ke ${targetBroadcast}...`,
+          ...prev.slice(0, 19),
+        ]);
 
         const sent = await WOLService.sendMagicPacket(targetMac, targetBroadcast, 9);
 
         if (sent) {
+          await mqttClient.publishWakeAck(`Magic packet dipancarkan ke ${targetMac}`);
           setLogs((prev) => [
             `[WAKE SUKSES] 102-byte Magic Packet berhasil ditransmisikan ke LAN!`,
             ...prev.slice(0, 19),
           ]);
-          triggerToast('Magic Packet Diteruskan', `Sinyal bangun ditransmisikan ke kabel LAN PC (${targetMac}).`, 'info');
-        } else {
+          triggerToast('Magic Packet Terkirim', `Paket bangun ditransmisikan ke kartu LAN PC (${targetMac}).`, 'info');
+
+          // Polling cepat hingga PC bangun
+          for (let i = 0; i < 20; i++) {
+            await new Promise((r) => setTimeout(r, 1500));
+            const pcTargetIp = targetBroadcast.replace('.255', '.102');
+            const alive = await WOLService.pingPC(pcTargetIp);
+            if (alive) {
+              setPcStatus('ONLINE');
+              await mqttClient.publishPcStatus('ONLINE');
+              triggerToast('PC Terdeteksi Hidup!', 'Ping LAN merespons, PC sekarang ONLINE.', 'success');
+              break;
+            }
+          }
+        }
+      }
+    });
+
+    // Listener Kontrol Daya (Khusus HP Kedua / Bridge Mode - Relay Lokal)
+    const unsubControl = mqttClient.onControlReceived(async (action) => {
+      if (roleRef.current === 'bridge' && isBridgeRunningRef.current) {
+        setLogs((prev) => [
+          `[KONTROL RELAY] Perintah ${action} dari HP Utama diterima. Meneruskan ke PC via LAN...`,
+          ...prev.slice(0, 19),
+        ]);
+
+        const targetBroadcast = stationConfigRef.current.broadcastIp || '192.168.0.255';
+        const pcTargetIp = targetBroadcast.replace('.255', '.102');
+        const targetMac = stationConfigRef.current.macAddress;
+
+        // Kirim langsung ke UDP Port 20388 PC Companion di LAN
+        const upper = action.toUpperCase() as any;
+        const localSent = await WOLService.sendLocalPowerCommand(pcTargetIp, targetMac, upper);
+        if (localSent) {
           setLogs((prev) => [
-            `[WAKE ERROR] Gagal mengirim paket native UDP. Pastikan izin jaringan aktif.`,
+            `[LAN OK] Perintah ${action} berhasil ditembakkan ke port 20388 PC (${pcTargetIp}).`,
             ...prev.slice(0, 19),
           ]);
         }
@@ -180,12 +232,63 @@ export default function HomeScreen() {
     return () => {
       unsubStatus();
       unsubConn();
+      unsubGateway();
+      unsubAck();
       unsubLog();
       unsubWake();
+      unsubControl();
       if (actionTimeoutRef.current) clearTimeout(actionTimeoutRef.current);
       if (wakeTimeoutRef.current) clearTimeout(wakeTimeoutRef.current);
     };
   }, []);
+
+  // Manajemen Siklus Gateway Standby 24/7 (HP Kedua)
+  useEffect(() => {
+    StorageService.setItem('wol_app_role', role);
+
+    if (role === 'bridge') {
+      // 1. Kunci CPU WakeLock agar Android tidak pernah mematikan proses saat layar mati
+      WOLService.setGatewayKeepAlive(true);
+
+      // 2. Loop Ping Fisik PC Lokal di LAN setiap 3.5 detik
+      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+      pingIntervalRef.current = setInterval(async () => {
+        if (!isBridgeRunningRef.current) return;
+        const targetBroadcast = stationConfigRef.current.broadcastIp || '192.168.0.255';
+        const pcTargetIp = targetBroadcast.replace('.255', '.102');
+        const alive = await WOLService.pingPC(pcTargetIp, 1200);
+
+        const newStat: PCStatus = alive ? 'ONLINE' : 'OFFLINE';
+        if (newStat !== pcStatusRef.current) {
+          setPcStatus(newStat);
+          mqttClient.publishPcStatus(newStat);
+        }
+      }, 3500);
+
+      // 3. Heartbeat Gateway ke Cloud setiap 10 detik
+      if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+      heartbeatIntervalRef.current = setInterval(() => {
+        if (!isBridgeRunningRef.current) return;
+        mqttClient.publishGatewayHeartbeat(true, pcStatusRef.current);
+      }, 10000);
+    } else {
+      // Role Controller: Lepaskan keepalive jika sebelumnya bridge
+      WOLService.setGatewayKeepAlive(false);
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
+      if (heartbeatIntervalRef.current) {
+        clearInterval(heartbeatIntervalRef.current);
+        heartbeatIntervalRef.current = null;
+      }
+    }
+
+    return () => {
+      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
+      if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+    };
+  }, [role, isBridgeRunning]);
 
   const handleSaveConfig = async (newConfig: StationConfig) => {
     setStationConfig(newConfig);
@@ -200,20 +303,20 @@ export default function HomeScreen() {
 
     if (effectiveKey || effectiveMac) {
       const newConfig: StationConfig = {
-        stationName: (scanned.stationName || stationConfig.stationName || 'RIG-STATION-PRO').trim(),
-        stationKey: (effectiveKey || '').trim(),
-        macAddress: (effectiveMac || '').trim().toUpperCase(),
+        stationName: (scanned.stationName || stationConfig.stationName || 'DESKTOP-FIERRO').trim(),
+        stationKey: (effectiveKey || 'WOL-9341-PC').trim(),
+        macAddress: (effectiveMac || 'F0:2F:74:8B:F6:43').trim().toUpperCase(),
         broadcastIp: (scanned.broadcastIp || stationConfig.broadcastIp || '192.168.0.255').trim(),
         brokerUrl: sanitizeBrokerUrl(scanned.brokerUrl || stationConfig.brokerUrl || 'broker.hivemq.com'),
       };
       handleSaveConfig(newConfig);
       setIsDirectScannerOpen(false);
       setIsSettingsOpen(false);
-      triggerToast('Pairing PC Berhasil!', `Stasiun ${newConfig.stationKey || newConfig.macAddress} terhubung.`, 'success');
+      triggerToast('Pairing PC Berhasil!', `Stasiun ${newConfig.stationKey} terhubung.`, 'success');
     }
   };
 
-  // Handler Perintah Wake Up (Magic Packet)
+  // Handler Perintah Wake Up (Magic Packet via Gateway)
   const handleWake = async () => {
     if (activeTransition) return;
 
@@ -225,26 +328,30 @@ export default function HomeScreen() {
 
     setActiveTransition('waking');
 
-    // 1. Kirim via Cloud MQTT (agar diterima HP Bridge di rumah jika di luar jaringan)
+    // 1. Kirim sinyal bangun ke HP Standby di rumah via Cloud Broker
     await mqttClient.sendWakeCommand();
 
-    // 2. Kirim juga secara native UDP broadcast ganda lokal (Wi-Fi lokal subnet + 255.255.255.255)
+    // 2. Transmisikan juga broadcast lokal (jika kebetulan HP utama sedang berada di rumah)
     await WOLService.sendMagicPacket(stationConfig.macAddress, stationConfig.broadcastIp, 9);
 
-    // Langsung beri umpan balik sukses seketika (Magic Packet adalah transmisi fisik fire-and-forget)
     triggerToast(
-      'Magic Packet Terkirim!',
-      'Sinyal 102-byte berhasil dipancarkan ke kartu LAN PC. Komputer sedang proses menyala.',
+      'Sinyal Wake Terkirim!',
+      'Perintah bangun diteruskan ke HP Standby di rumah. Sedang menembakkan sinyal ke PC...',
       'success'
     );
 
-    // Hentikan animasi sinkronisasi setelah 4 detik
-    setTimeout(() => {
-      setActiveTransition(null);
-    }, 4000);
+    // Timeout 30 detik untuk menunggu PC boot
+    if (wakeTimeoutRef.current) clearTimeout(wakeTimeoutRef.current);
+    wakeTimeoutRef.current = setTimeout(() => {
+      wakeTimeoutRef.current = null;
+      if (pcStatus !== 'ONLINE') {
+        setActiveTransition(null);
+        triggerToast('PC Belum Merespons', 'Pastikan kabel LAN terpasang & HP Standby di rumah aktif terhubung Wi-Fi.', 'danger');
+      }
+    }, 30000);
   };
 
-  // Handler Kontrol Daya (Sleep, Hibernate, Restart, Shutdown)
+  // Handler Kontrol Daya (Sleep, Hibernate, Restart, Shutdown, Lock)
   const handlePowerAction = async (action: PowerAction) => {
     if (activeTransition) return;
 
@@ -268,26 +375,26 @@ export default function HomeScreen() {
       return;
     }
 
-    // Pasang timeout nyata: jika 8 detik PC tidak merespons (misal Companion tidak dibuka di PC)
+    // Pasang timeout konfirmasi 10 detik
     if (actionTimeoutRef.current) clearTimeout(actionTimeoutRef.current);
     actionTimeoutRef.current = setTimeout(() => {
       actionTimeoutRef.current = null;
       setActiveTransition(null);
       triggerToast(
-        'Perintah Tidak Direspons',
-        `PC tidak merespons perintah ${action.toUpperCase()} dalam 8 detik. Pastikan run_companion.bat sedang berjalan di PC Anda.`,
-        'danger'
+        'Perintah Diteruskan',
+        `Perintah ${action.toUpperCase()} telah dikirim ke Gateway rumah. Menunggu PC beralih status.`,
+        'info'
       );
-    }, 8000);
+    }, 10000);
   };
 
   const captionText =
     pcStatus === 'UNCONFIGURED'
       ? '⚠️ Belum dikonfigurasi. Klik ⚙️ di pojok kanan atas.'
       : activeTransition === 'waking'
-      ? '📡 Menunggu konfirmasi Windows Service boot up...'
+      ? '📡 HP Gateway rumah sedang menembakkan Magic Packet ke PC...'
       : activeTransition === 'shutdown'
-      ? '⏳ Menunggu Windows menutup proses & memutus socket...'
+      ? '⏳ Menunggu Windows menutup proses & memutus daya...'
       : activeTransition === 'sleep'
       ? '💤 Menunggu Windows memasuki status Suspend (S3)...'
       : activeTransition === 'hibernate'
@@ -295,10 +402,9 @@ export default function HomeScreen() {
       : activeTransition === 'restart'
       ? '🔄 Menunggu Windows mulai ulang dan online kembali...'
       : pcStatus === 'ONLINE'
-      ? 'PC telah aktif dan siap dikontrol secara realtime'
-      : 'Ketuk tombol untuk membangunkan komputer via LAN';
+      ? 'PC telah aktif dan siap dikontrol dari jarak jauh'
+      : 'Ketuk untuk membangunkan komputer via HP Standby di rumah';
 
-  // 1. Jika Pemindai QR Langsung Aktif: Tampilkan HANYA Layar Pemindai QR!
   if (isDirectScannerOpen) {
     return (
       <QRScannerModal
@@ -309,7 +415,6 @@ export default function HomeScreen() {
     );
   }
 
-  // 2. Jika Menu Pengaturan Aktif: Tampilkan HANYA Layar Pengaturan!
   if (isSettingsOpen) {
     return (
       <SettingsModal
@@ -353,15 +458,14 @@ export default function HomeScreen() {
       <View style={styles.header}>
         <View style={styles.headerLeft}>
           <Text style={styles.headerKicker}>
-            {role === 'controller' ? 'REMOTE WORKSTATION' : 'STANDBY RELAY'}
+            {role === 'controller' ? '🎮 REMOTE CONTROLLER' : '📡 HOME GATEWAY RELAY'}
           </Text>
           <Text style={styles.headerTitle} numberOfLines={1}>
-            {stationConfig.stationName || 'Belum Dikonfigurasi'}
+            {stationConfig.stationName || 'DESKTOP-FIERRO'}
           </Text>
         </View>
 
         <View style={styles.headerRight}>
-          {/* Quick QR Scan & Settings Buttons */}
           <TouchableOpacity
             activeOpacity={0.75}
             onPress={() => setIsDirectScannerOpen(true)}
@@ -392,7 +496,7 @@ export default function HomeScreen() {
               onPress={() => setRole('bridge')}
               style={[styles.roleBtn, role === 'bridge' && styles.roleBtnActiveBridge]}
             >
-              <Text style={styles.roleBtnText}>📡 Bridge</Text>
+              <Text style={styles.roleBtnText}>📡 Gateway</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -417,94 +521,67 @@ export default function HomeScreen() {
       )}
 
       {/* ======================================================== */}
-      {/* MODE 1: CONTROLLER (HP UTAMA - UNIVERSAL)                 */}
+      {/* MODE 1: CONTROLLER (HP UTAMA DI TANGAN ANDA)              */}
       {/* ======================================================== */}
       {role === 'controller' ? (
-        isLandscape || isTablet ? (
-          // TABLET / LANDSCAPE 2-KOLOM (COMMAND CENTER)
-          <View style={styles.landscapeRow}>
-            {/* Kolom Kiri: Master Hub Circle */}
-            <View style={styles.colLeft}>
-              <CyberMasterCircle
-                pcStatus={pcStatus}
-                activeTransition={activeTransition}
-                onPress={handleWake}
-                size={isTablet ? 'large' : 'compact'}
-                captionText={captionText}
+        <ScrollView contentContainerStyle={styles.scrollPortrait} showsVerticalScrollIndicator={false}>
+          {/* Gateway Status Pill */}
+          <View style={styles.gatewayStatusCard}>
+            <View style={styles.gatewayStatusRow}>
+              <View
+                style={[
+                  styles.gatewayIndicator,
+                  { backgroundColor: isGatewayActive ? CyberColors.online : '#94a3b8' },
+                ]}
               />
-              <Text style={styles.stationKeyBadge}>
-                KEY: {stationConfig.stationKey || 'KOSONG'}
+              <Text style={styles.gatewayStatusText}>
+                {isGatewayActive
+                  ? 'HP Standby di Rumah: AKTIF (Siap Meneruskan)'
+                  : 'HP Standby di Rumah: Menunggu Detak Jantung...'}
               </Text>
-            </View>
-
-            {/* Kolom Kanan: Status & Power Grid */}
-            <View style={styles.colRight}>
-              <StatusCard status={pcStatus} activeTransition={activeTransition} />
-              <PowerGrid
-                onAction={handlePowerAction}
-                disabled={!!activeTransition}
-                compact={!isTablet}
-              />
-
-              <View style={styles.footerBar}>
-                <View style={styles.footerDotRow}>
-                  <View style={[styles.liveDot, { backgroundColor: isCloudConnected ? CyberColors.online : '#ef4444' }]} />
-                  <Text style={styles.footerText}>
-                    Cloud: {isCloudConnected ? 'Connected (QoS 1)' : 'Offline'}
-                  </Text>
-                </View>
-                <Text style={styles.footerText}>
-                  Stasiun: {stationConfig.stationKey || 'Belum Diset'}
-                </Text>
-              </View>
             </View>
           </View>
-        ) : (
-          // SMARTPHONE PORTRAIT (VERTICAL FLOW)
-          <ScrollView contentContainerStyle={styles.scrollPortrait} showsVerticalScrollIndicator={false}>
-            <StatusCard status={pcStatus} activeTransition={activeTransition} />
 
-            <CyberMasterCircle
-              pcStatus={pcStatus}
-              activeTransition={activeTransition}
-              onPress={handleWake}
-              size="normal"
-              captionText={captionText}
-            />
+          <StatusCard status={pcStatus} activeTransition={activeTransition} />
 
-            <PowerGrid
-              onAction={handlePowerAction}
-              disabled={!!activeTransition}
-            />
+          <CyberMasterCircle
+            pcStatus={pcStatus}
+            activeTransition={activeTransition}
+            onPress={handleWake}
+            size="normal"
+            captionText={captionText}
+          />
 
-            <View style={styles.footerBar}>
-              <View style={styles.footerDotRow}>
-                <View style={[styles.liveDot, { backgroundColor: isCloudConnected ? CyberColors.online : '#ef4444' }]} />
-                <Text style={styles.footerText}>
-                  Cloud: {isCloudConnected ? 'Connected' : 'Offline'}
-                </Text>
-              </View>
+          <PowerGrid
+            onAction={handlePowerAction}
+            disabled={!!activeTransition}
+          />
+
+          <View style={styles.footerBar}>
+            <View style={styles.footerDotRow}>
+              <View style={[styles.liveDot, { backgroundColor: isCloudConnected ? CyberColors.online : '#ef4444' }]} />
               <Text style={styles.footerText}>
-                Stasiun: {stationConfig.stationKey || 'Belum Diset'}
+                Cloud: {isCloudConnected ? 'Connected (QoS 1)' : 'Offline'}
               </Text>
             </View>
-          </ScrollView>
-        )
+            <Text style={styles.footerText}>
+              Stasiun: {stationConfig.stationKey}
+            </Text>
+          </View>
+        </ScrollView>
       ) : (
         // ========================================================
-        // MODE 2: STANDBY BRIDGE (HP RUMAH NGANGGUR)
+        // MODE 2: HOME GATEWAY (HP KEDUA STANDBY DI DEKAT PC)
         // ========================================================
         <ScrollView contentContainerStyle={styles.scrollBridge} showsVerticalScrollIndicator={false}>
           {/* Bridge Service Card */}
           <View style={[styles.bridgeCard, isBridgeRunning && styles.bridgeCardActive]}>
             <View style={styles.bridgeInfo}>
-              <Text style={styles.bridgeTitle}>Layanan WOL Listener (Bridge)</Text>
+              <Text style={styles.bridgeTitle}>GATEWAY SIAGA 24/7 (RUMAH)</Text>
               <Text style={styles.bridgeSubtitle}>
                 {isBridgeRunning
-                  ? stationConfig.stationKey
-                    ? `Mendengarkan stasiun '${stationConfig.stationKey}' 24/7`
-                    : 'Menunggu konfigurasi stasiun di menu ⚙️'
-                  : 'Layanan dihentikan sementara'}
+                  ? `Siaga meneruskan sinyal HP Utama ke PC '${stationConfig.stationName}'`
+                  : 'Layanan gateway dihentikan sementara'}
               </Text>
             </View>
             <TouchableOpacity
@@ -515,10 +592,31 @@ export default function HomeScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* Network & Pairing Specs */}
+          {/* Live PC Physical Ping Status */}
+          <View style={styles.pingStatusBox}>
+            <Text style={styles.pingTitle}>STATUS FISIK PC DI LAN (PING WAKEDOG):</Text>
+            <View style={styles.pingRow}>
+              <View
+                style={[
+                  styles.pingDot,
+                  { backgroundColor: pcStatus === 'ONLINE' ? CyberColors.online : '#ef4444' },
+                ]}
+              />
+              <Text
+                style={[
+                  styles.pingValue,
+                  { color: pcStatus === 'ONLINE' ? CyberColors.online : '#ef4444' },
+                ]}
+              >
+                {pcStatus === 'ONLINE' ? 'ONLINE (Merespons Ping)' : 'OFFLINE / MATI (Siap Bangun)'}
+              </Text>
+            </View>
+          </View>
+
+          {/* Specs Card */}
           <View style={styles.specsCard}>
             <View style={styles.specRow}>
-              <Text style={styles.specLabel}>Status Koneksi Cloud:</Text>
+              <Text style={styles.specLabel}>Status Cloud MQTT:</Text>
               <Text style={[styles.specValue, { color: isCloudConnected ? CyberColors.online : '#ef4444' }]}>
                 {isCloudConnected ? '🟢 TERHUBUNG' : '🔴 TERPUTUS'}
               </Text>
@@ -526,19 +624,19 @@ export default function HomeScreen() {
             <View style={styles.specRow}>
               <Text style={styles.specLabel}>Station Pairing Key:</Text>
               <Text style={[styles.specValue, { color: CyberColors.neonCyan }]}>
-                {stationConfig.stationKey || '(Kosong)'}
+                {stationConfig.stationKey}
               </Text>
             </View>
             <View style={styles.specRow}>
-              <Text style={styles.specLabel}>Target MAC PC:</Text>
+              <Text style={styles.specLabel}>Target MAC LAN:</Text>
               <Text style={[styles.specValue, { color: '#ffffff' }]}>
-                {stationConfig.macAddress || '(Kosong)'}
+                {stationConfig.macAddress}
               </Text>
             </View>
             <View style={styles.specRow}>
               <Text style={styles.specLabel}>Broadcast LAN:</Text>
               <Text style={styles.specValue}>
-                {stationConfig.broadcastIp ? `${stationConfig.broadcastIp}:9` : '(Kosong)'}
+                {stationConfig.broadcastIp}:9
               </Text>
             </View>
           </View>
@@ -546,7 +644,7 @@ export default function HomeScreen() {
           {/* Terminal Log */}
           <View style={styles.terminalBox}>
             <View style={styles.terminalHeader}>
-              <Text style={styles.terminalTitle}>LIVE PACKET LOG</Text>
+              <Text style={styles.terminalTitle}>LIVE PACKET RELAY LOG</Text>
               <View style={[styles.liveDot, { backgroundColor: isCloudConnected ? CyberColors.online : '#ef4444' }]} />
             </View>
             <ScrollView style={styles.logScrollView}>
@@ -559,7 +657,7 @@ export default function HomeScreen() {
           </View>
 
           <Text style={styles.batteryNote}>
-            🛡️ Baterai dioptimalkan: Standby Bridge berjalan sangat hemat daya di latar belakang.
+            🛡️ CPU WakeLock Aktif: Ponsel ini tidak akan tertidur meski layar mati. Biarkan tercolok charger.
           </Text>
         </ScrollView>
       )}
@@ -599,133 +697,110 @@ const styles = StyleSheet.create({
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
   },
   settingsBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 38,
+    height: 38,
+    borderRadius: 19,
     backgroundColor: '#0f172a',
     borderWidth: 1,
     borderColor: '#334155',
-    alignItems: 'center',
     justifyContent: 'center',
+    alignItems: 'center',
   },
   settingsBtnText: {
     fontSize: 16,
   },
   rolePicker: {
     flexDirection: 'row',
-    backgroundColor: '#0f172a',
-    borderRadius: 12,
+    backgroundColor: '#020617',
+    borderRadius: 20,
     padding: 3,
     borderWidth: 1,
     borderColor: '#1e293b',
   },
   roleBtn: {
     paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 9,
+    paddingVertical: 5,
+    borderRadius: 16,
   },
   roleBtnActive: {
-    backgroundColor: '#4338ca',
+    backgroundColor: CyberColors.neonIndigo,
   },
   roleBtnActiveBridge: {
-    backgroundColor: '#065f46',
+    backgroundColor: '#059669',
   },
   roleBtnText: {
     color: '#ffffff',
     fontSize: 11,
-    fontWeight: '600',
+    fontWeight: 'bold',
   },
   unconfiguredBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(234, 179, 8, 0.12)',
+    backgroundColor: '#451a03',
     borderBottomWidth: 1,
-    borderBottomColor: 'rgba(234, 179, 8, 0.3)',
+    borderColor: '#f59e0b',
     paddingHorizontal: 16,
     paddingVertical: 10,
-    gap: 12,
   },
   unconfiguredBannerIcon: {
-    fontSize: 18,
+    fontSize: 20,
+    marginRight: 10,
   },
   unconfiguredBannerCol: {
     flex: 1,
   },
   unconfiguredBannerTitle: {
-    color: '#fef08a',
-    fontSize: 12,
-    fontWeight: '700',
+    color: '#fbbf24',
+    fontSize: 13,
+    fontWeight: 'bold',
   },
   unconfiguredBannerDesc: {
-    color: '#fef9c3',
-    fontSize: 10,
-    marginTop: 1,
+    color: '#fde68a',
+    fontSize: 11,
+    marginTop: 2,
   },
   unconfiguredBannerArrow: {
-    color: '#fef08a',
-    fontSize: 16,
+    color: '#fbbf24',
+    fontSize: 18,
+    fontWeight: 'bold',
+  },
+  gatewayStatusCard: {
+    backgroundColor: '#0f172a',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    marginBottom: 8,
+  },
+  gatewayStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  gatewayIndicator: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 8,
+  },
+  gatewayStatusText: {
+    color: '#94a3b8',
+    fontSize: 11,
+    fontFamily: 'monospace',
     fontWeight: 'bold',
   },
   scrollPortrait: {
     padding: 20,
-    justifyContent: 'space-between',
-    flexGrow: 1,
-  },
-  landscapeRow: {
-    flex: 1,
-    flexDirection: 'row',
-    padding: 20,
-    gap: 20,
-  },
-  colLeft: {
-    flex: 1,
-    justifyContent: 'center',
     alignItems: 'center',
-    borderRightWidth: 1,
-    borderRightColor: '#1e293b',
-    paddingRight: 16,
-  },
-  colRight: {
-    flex: 1,
-    justifyContent: 'space-between',
-    paddingLeft: 4,
-  },
-  stationKeyBadge: {
-    color: CyberColors.neonCyan,
-    fontSize: 10,
-    fontFamily: 'monospace',
-    marginTop: 4,
-  },
-  footerBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#1e293b',
-    marginTop: 8,
-  },
-  footerDotRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  liveDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  footerText: {
-    color: '#64748b',
-    fontSize: 10,
-    fontFamily: 'monospace',
+    paddingBottom: 40,
   },
   scrollBridge: {
     padding: 20,
-    gap: 16,
+    paddingBottom: 40,
   },
   bridgeCard: {
     flexDirection: 'row',
@@ -733,13 +808,14 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#0f172a',
     padding: 18,
-    borderRadius: 18,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: '#1e293b',
+    marginBottom: 16,
   },
   bridgeCardActive: {
-    borderColor: 'rgba(16, 185, 129, 0.4)',
-    backgroundColor: '#091e1d',
+    borderColor: '#059669',
+    backgroundColor: '#06281e',
   },
   bridgeInfo: {
     flex: 1,
@@ -749,22 +825,21 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 15,
     fontWeight: 'bold',
+    letterSpacing: 0.5,
   },
   bridgeSubtitle: {
     color: '#94a3b8',
-    fontSize: 11,
+    fontSize: 12,
     marginTop: 4,
-    lineHeight: 16,
   },
   switchTrack: {
-    width: 52,
-    height: 30,
-    borderRadius: 15,
-    padding: 3,
-    justifyContent: 'center',
+    width: 50,
+    height: 28,
+    borderRadius: 14,
+    padding: 2,
   },
   switchOn: {
-    backgroundColor: CyberColors.online,
+    backgroundColor: '#10b981',
   },
   switchOff: {
     backgroundColor: '#334155',
@@ -781,91 +856,145 @@ const styles = StyleSheet.create({
   thumbOff: {
     alignSelf: 'flex-start',
   },
+  pingStatusBox: {
+    backgroundColor: '#09131d',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1e293b',
+    padding: 14,
+    marginBottom: 16,
+  },
+  pingTitle: {
+    color: '#64748b',
+    fontSize: 10,
+    fontFamily: 'monospace',
+    letterSpacing: 1,
+    marginBottom: 6,
+  },
+  pingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  pingDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginRight: 8,
+  },
+  pingValue: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    fontFamily: 'monospace',
+  },
   specsCard: {
     backgroundColor: '#0f172a',
-    borderRadius: 18,
+    borderRadius: 14,
     padding: 16,
     borderWidth: 1,
     borderColor: '#1e293b',
-    gap: 12,
+    marginBottom: 16,
   },
   specRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1e293b',
   },
   specLabel: {
-    color: '#64748b',
-    fontSize: 11,
-    fontFamily: 'monospace',
+    color: '#94a3b8',
+    fontSize: 12,
   },
   specValue: {
-    fontSize: 11,
+    color: '#ffffff',
+    fontSize: 12,
     fontFamily: 'monospace',
-    fontWeight: '700',
-    color: '#e2e8f0',
+    fontWeight: 'bold',
   },
   terminalBox: {
     backgroundColor: '#020617',
-    borderRadius: 18,
-    padding: 16,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: '#1e293b',
+    padding: 14,
     minHeight: 180,
   },
   terminalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingBottom: 10,
+    marginBottom: 10,
     borderBottomWidth: 1,
     borderBottomColor: '#1e293b',
-    marginBottom: 10,
+    paddingBottom: 6,
   },
   terminalTitle: {
-    color: CyberColors.neonCyan,
+    color: '#64748b',
     fontSize: 10,
     fontFamily: 'monospace',
-    fontWeight: 'bold',
-    letterSpacing: 1,
+    letterSpacing: 1.5,
   },
   logScrollView: {
     maxHeight: 150,
   },
   logText: {
-    color: '#a7f3d0',
-    fontSize: 10,
+    color: '#38bdf8',
+    fontSize: 11,
     fontFamily: 'monospace',
-    lineHeight: 17,
+    marginBottom: 4,
   },
   batteryNote: {
     color: '#64748b',
     fontSize: 11,
     textAlign: 'center',
-    marginTop: 8,
-    lineHeight: 16,
+    marginTop: 14,
+    paddingHorizontal: 20,
+  },
+  footerBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#1e293b',
+    marginTop: 16,
+  },
+  footerDotRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  liveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginRight: 6,
+  },
+  footerText: {
+    color: '#64748b',
+    fontSize: 11,
+    fontFamily: 'monospace',
   },
   toastContainer: {
     position: 'absolute',
-    top: 20,
+    top: 50,
     left: 20,
     right: 20,
     backgroundColor: '#0f172a',
-    borderRadius: 16,
+    borderRadius: 12,
+    borderWidth: 1,
     padding: 14,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    borderWidth: 1,
     zIndex: 9999,
-    elevation: 10,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.4,
+    shadowOpacity: 0.5,
     shadowRadius: 8,
+    elevation: 10,
   },
   toastEmoji: {
-    fontSize: 18,
+    fontSize: 20,
+    marginRight: 12,
   },
   toastTextCol: {
     flex: 1,
@@ -879,6 +1008,5 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
     fontSize: 11,
     marginTop: 2,
-    lineHeight: 15,
   },
 });

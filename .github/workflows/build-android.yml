@@ -36,10 +36,10 @@ jobs:
         run: |
           cd android
           chmod +x gradlew
-          ./gradlew assembleRelease assembleDebug
+          ./gradlew assembleRelease
 
       - name: Upload Android APK Artifact
         uses: actions/upload-artifact@v4
         with:
           name: WOLRemoteStation-Android-APK
-          path: android/app/build/outputs/apk/**/*.apk
+          path: android/app/build/outputs/apk/release/*.apk

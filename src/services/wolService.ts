@@ -1,9 +1,14 @@
 /**
- * Wake-on-LAN (WOL) Magic Packet Generator & LAN Broadcaster
- * Berjalan secara native di Android dan iOS melalui modul ExpoWol
+ * Wake-on-LAN (WOL) Magic Packet Generator, Local Broadcaster & Hardware Ping
  */
 
-import { sendWakeOnLanNative } from '../../modules/expo-wol';
+import {
+  sendWakeOnLanNative,
+  pingHostNative,
+  sendUdpCommandNative,
+  startKeepAliveNative,
+  stopKeepAliveNative,
+} from '../../modules/expo-wol';
 
 export class WOLService {
   /**
@@ -22,10 +27,12 @@ export class WOLService {
 
       const targetIp = (broadcastIp && broadcastIp.trim().length > 0) ? broadcastIp.trim() : '192.168.0.255';
       const r1 = await sendWakeOnLanNative(cleanMac, targetIp, port);
-      // Transmisikan ganda ke universal 255.255.255.255 untuk menjamin lolos di semua model router
+
+      // Transmisikan ganda ke universal 255.255.255.255 & port 7 untuk menjamin lolos di semua router
       if (targetIp !== '255.255.255.255') {
         try {
           await sendWakeOnLanNative(cleanMac, '255.255.255.255', port);
+          await sendWakeOnLanNative(cleanMac, targetIp, 7);
         } catch {}
       }
       return r1;
@@ -35,32 +42,46 @@ export class WOLService {
   }
 
   /**
-   * Membuat payload Magic Packet standar (102 bytes):
-   * - 6 byte 0xFF
-   * - 16x repetisi MAC address target (6 byte x 16 = 96 byte)
+   * Ping perangkat lokal PC di LAN untuk mengetahui status hidup/mati riil
    */
-  public static createMagicPacket(macAddress: string): Uint8Array {
-    const cleanMac = macAddress.replace(/[^0-9A-Fa-f]/g, '');
-    if (cleanMac.length !== 12) {
-      throw new Error(`MAC Address tidak valid: ${macAddress}. Harus 12 digit heksadesimal.`);
+  public static async pingPC(targetIp: string = '192.168.0.102', timeoutMs: number = 1500): Promise<boolean> {
+    try {
+      return await pingHostNative(targetIp, timeoutMs);
+    } catch {
+      return false;
     }
+  }
 
-    const macBytes = new Uint8Array(6);
-    for (let i = 0; i < 6; i++) {
-      macBytes[i] = parseInt(cleanMac.substring(i * 2, i * 2 + 2), 16);
+  /**
+   * Kirim perintah daya langsung ke PC Companion via Local LAN (Port 20388)
+   */
+  public static async sendLocalPowerCommand(
+    targetIp: string,
+    macAddress: string,
+    command: 'SLEEP' | 'HIBERNATE' | 'RESTART' | 'SHUTDOWN' | 'LOCK'
+  ): Promise<boolean> {
+    try {
+      const payload = JSON.stringify({
+        type: 'POWER_COMMAND',
+        command: command,
+        mac: macAddress,
+        time: Math.floor(Date.now() / 1000),
+      });
+      return await sendUdpCommandNative(targetIp, 20388, payload);
+    } catch {
+      return false;
     }
+  }
 
-    const packet = new Uint8Array(102);
-    for (let i = 0; i < 6; i++) {
-      packet[i] = 0xff;
+  /**
+   * Kunci CPU ponsel agar tidak dimatikan Android saat berperan sebagai Gateway Standby
+   */
+  public static async setGatewayKeepAlive(active: boolean): Promise<boolean> {
+    if (active) {
+      return await startKeepAliveNative();
+    } else {
+      return await stopKeepAliveNative();
     }
-    for (let i = 0; i < 16; i++) {
-      for (let j = 0; j < 6; j++) {
-        packet[6 + i * 6 + j] = macBytes[j];
-      }
-    }
-
-    return packet;
   }
 
   public static isValidMac(mac: string): boolean {

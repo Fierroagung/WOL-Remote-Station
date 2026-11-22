@@ -1,12 +1,11 @@
 /**
-/**
  * Universal MQTT 3.1.1 Realtime Client for React Native / Expo
  * Beroperasi langsung di atas WebSocket (WSS) standar tanpa library eksternal (Zero Dependencies).
- * Mendukung Android, iOS, dan Web tanpa crash native.
+ * Mendukung arsitektur Dual-Role: HP Utama (Controller) <-> HP Kedua (Gateway Standby) <-> PC Desktop
  */
 
 export type PCStatus = 'ONLINE' | 'OFFLINE' | 'SLEEPING' | 'UNCONFIGURED';
-export type PowerAction = 'wake' | 'sleep' | 'hibernate' | 'restart' | 'shutdown';
+export type PowerAction = 'wake' | 'sleep' | 'hibernate' | 'restart' | 'shutdown' | 'lock';
 
 export interface StationConfig {
   stationName: string;
@@ -18,8 +17,8 @@ export interface StationConfig {
 
 export const DEFAULT_STATION_CONFIG: StationConfig = {
   stationName: 'DESKTOP-FIERRO',
-  stationKey: 'WOL-45KR-PC',
-  macAddress: '9C:71:C4:11:44:13',
+  stationKey: 'WOL-9341-PC',
+  macAddress: 'F0:2F:74:8B:F6:43',
   broadcastIp: '192.168.0.255',
   brokerUrl: 'wss://broker.hivemq.com:8884/mqtt',
 };
@@ -33,7 +32,6 @@ export const DEFAULT_BROKER_WS = 'wss://broker.hivemq.com:8884/mqtt';
 // ============================================================================
 
 function encodeUtf8(str: string): Uint8Array {
-  // Polyfill / safe encoder untuk React Native
   if (typeof TextEncoder !== 'undefined') {
     return new TextEncoder().encode(str);
   }
@@ -132,68 +130,58 @@ function buildSubscribePacket(packetId: number, topic: string): Uint8Array {
   return new Uint8Array([0x82, ...remLen, ...body]);
 }
 
-function buildPublishPacket(topic: string, payloadStr: string): Uint8Array {
+function buildPublishPacket(topic: string, payloadStr: string, retain: boolean = false): Uint8Array {
   const topicBytes = encodeString(topic);
   const payloadBytes = encodeUtf8(payloadStr);
 
   const body = new Uint8Array([...topicBytes, ...payloadBytes]);
   const remLen = encodeRemainingLength(body.length);
-  return new Uint8Array([0x30, ...remLen, ...body]); // 0x30 = PUBLISH QoS 0
+  const header = retain ? 0x31 : 0x30;
+  return new Uint8Array([header, ...remLen, ...body]);
 }
 
 function buildPingPacket(): Uint8Array {
-  return new Uint8Array([0xc0, 0x00]); // PINGREQ
+  return new Uint8Array([0xc0, 0x00]);
 }
-
-// ============================================================================
-// URL Sanitizer (Mencegah Crash Android pada Input User)
-// ============================================================================
 
 export function sanitizeBrokerUrl(rawUrl: string): string {
   if (!rawUrl || !rawUrl.trim()) {
     return DEFAULT_BROKER_WS;
   }
   let url = rawUrl.trim();
-
-  // Jika user memasukkan port standard TCP 1883 atau mengetik hostname tanpa skema
   if (url.includes(':1883')) {
     url = url.replace(':1883', ':8884/mqtt');
   }
-
-  // Jika belum ada prefix protokol ws:// atau wss://
   if (!/^wss?:\/\//i.test(url)) {
     url = 'wss://' + url;
   }
-
-  // Jika URL mengarah ke broker HiveMQ atau EMQX tanpa port/path WebSocket
   try {
-    // Pastikan jika hanya domain, tambahkan default port dan path websocket jika hivemq
     if (url.includes('hivemq.com') && !url.includes(':8884')) {
       url = 'wss://broker.hivemq.com:8884/mqtt';
     }
   } catch {
     return DEFAULT_BROKER_WS;
   }
-
   return url;
 }
 
-// ============================================================================
-// Service Singleton
-// ============================================================================
-
 class MQTTService {
   private ws: WebSocket | null = null;
-  private config: StationConfig = EMPTY_STATION_CONFIG;
+  private config: StationConfig = DEFAULT_STATION_CONFIG;
   private statusListeners: Array<(status: PCStatus, rawData?: any) => void> = [];
   private wakeListeners: Array<(wakeData: { targetMac: string; broadcastIp: string }) => void> = [];
+  private controlListeners: Array<(action: string, rawData?: any) => void> = [];
+  private gatewayListeners: Array<(gatewayAlive: boolean, pcStatus?: PCStatus) => void> = [];
+  private ackListeners: Array<(ackData: any) => void> = [];
   private logListeners: Array<(log: string) => void> = [];
   private connectionListeners: Array<(connected: boolean) => void> = [];
 
   private isConnected: boolean = false;
-  private currentStatus: PCStatus = 'UNCONFIGURED';
+  private currentStatus: PCStatus = 'OFFLINE';
+  private isGatewayAlive: boolean = false;
   private pingInterval: any = null;
   private reconnectTimer: any = null;
+  private gatewayHeartbeatTimer: any = null;
   private packetId: number = 1;
 
   public getTopicStatus(): string {
@@ -211,6 +199,16 @@ class MQTTService {
     return `wol_station/${this.config.stationKey}/wake`;
   }
 
+  public getTopicGateway(): string {
+    if (!this.config.stationKey) return '';
+    return `wol_station/${this.config.stationKey}/gateway`;
+  }
+
+  public getTopicAck(): string {
+    if (!this.config.stationKey) return '';
+    return `wol_station/${this.config.stationKey}/ack`;
+  }
+
   public getConfig(): StationConfig {
     return { ...this.config };
   }
@@ -222,14 +220,10 @@ class MQTTService {
   public updateConfig(newConfig: Partial<StationConfig>) {
     this.config = { ...this.config, ...newConfig };
     if (this.isConfigured()) {
-      this.addLog(`[CONFIG] Konfigurasi stasiun diperbarui: ${this.config.stationKey}`);
-      if (this.currentStatus === 'UNCONFIGURED') {
-        this.updateStatus('OFFLINE');
-      }
+      this.addLog(`[CONFIG] Konfigurasi stasiun: ${this.config.stationKey}`);
     } else {
       this.updateStatus('UNCONFIGURED');
     }
-
     this.reconnect();
   }
 
@@ -254,9 +248,7 @@ class MQTTService {
         this.ws.onerror = null;
         this.ws.onclose = null;
         this.ws.close();
-      } catch {
-        // Ignore
-      }
+      } catch {}
       this.ws = null;
     }
     this.setConnected(false);
@@ -279,7 +271,7 @@ class MQTTService {
 
   public connect() {
     if (!this.isConfigured()) {
-      this.addLog('[MQTT] Konfigurasi stasiun masih kosong. Menunggu input di menu ⚙️ Pengaturan...');
+      this.addLog('[MQTT] Konfigurasi stasiun kosong.');
       this.updateStatus('UNCONFIGURED');
       return;
     }
@@ -292,7 +284,7 @@ class MQTTService {
       this.ws.binaryType = 'arraybuffer';
 
       this.ws.onopen = () => {
-        this.addLog('[MQTT] WebSocket terhubung. Mengirim handshake MQTT CONNECT...');
+        this.addLog('[MQTT] WebSocket terhubung. Mengirim handshake CONNECT...');
         const clientId = `wol_app_${Math.random().toString(16).substring(2, 10)}`;
         try {
           const connectPacket = buildConnectPacket(clientId);
@@ -312,44 +304,14 @@ class MQTTService {
           } else if (ArrayBuffer.isView(raw)) {
             bytes = new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
           } else if (typeof Blob !== 'undefined' && raw instanceof Blob) {
-            // Android React Native OkHttp delivers WebSocket binary frames as Blob
             if (typeof (raw as any).arrayBuffer === 'function') {
               try {
                 const buf = await (raw as any).arrayBuffer();
                 bytes = new Uint8Array(buf);
               } catch {}
             }
-            if (!bytes && typeof FileReader !== 'undefined') {
-              bytes = await new Promise<Uint8Array | null>((resolve) => {
-                const reader = new FileReader();
-                reader.onload = () => {
-                  if (reader.result instanceof ArrayBuffer) {
-                    resolve(new Uint8Array(reader.result));
-                  } else {
-                    resolve(null);
-                  }
-                };
-                reader.onerror = () => resolve(null);
-                reader.readAsArrayBuffer(raw);
-              });
-            }
           } else if (typeof raw === 'string') {
-            // Coba decode base64 jika ada
-            try {
-              if (typeof atob === 'function') {
-                const binStr = atob(raw);
-                const b = new Uint8Array(binStr.length);
-                for (let i = 0; i < binStr.length; i++) {
-                  b[i] = binStr.charCodeAt(i);
-                }
-                if (b.length >= 2 && ((b[0] >> 4) === 2 || (b[0] >> 4) === 3)) {
-                  bytes = b;
-                }
-              }
-            } catch {}
-            if (!bytes) {
-              bytes = encodeUtf8(raw);
-            }
+            bytes = encodeUtf8(raw);
           }
 
           if (!bytes || bytes.length < 2) return;
@@ -360,39 +322,39 @@ class MQTTService {
             const returnCode = bytes.length >= 4 ? bytes[3] : 0;
             if (returnCode === 0) {
               this.setConnected(true);
-              this.addLog(`[MQTT] Terkoneksi Sukses! Berlangganan stasiun: ${this.config.stationKey}`);
+              this.addLog(`[MQTT] Terkoneksi Sukses ke Stasiun ${this.config.stationKey}`);
 
-              // Mulai PING interval (30 detik)
               if (this.pingInterval) clearInterval(this.pingInterval);
               this.pingInterval = setInterval(() => {
                 this.sendPacket(buildPingPacket());
               }, 30000);
 
-              // Subscribe ke Status PC & Wake Commands
-              const topicStatus = this.getTopicStatus();
-              const topicWake = this.getTopicWake();
+              // Subscribe ke Status, Wake, Control, Gateway, Ack
+              const topics = [
+                this.getTopicStatus(),
+                this.getTopicWake(),
+                this.getTopicControl(),
+                this.getTopicGateway(),
+                this.getTopicAck(),
+              ];
 
-              if (topicStatus) {
-                this.sendPacket(buildSubscribePacket(this.packetId++, topicStatus));
-                this.addLog(`[MQTT] Subscribed ke ${topicStatus}`);
-              }
-              if (topicWake) {
-                this.sendPacket(buildSubscribePacket(this.packetId++, topicWake));
-                this.addLog(`[MQTT] Subscribed ke ${topicWake}`);
-              }
+              topics.forEach((t) => {
+                if (t) {
+                  this.sendPacket(buildSubscribePacket(this.packetId++, t));
+                }
+              });
             } else {
-              this.addLog(`[MQTT Ditolak] Broker menolak koneksi dengan kode: ${returnCode}`);
+              this.addLog(`[MQTT Ditolak] Broker menolak koneksi (code: ${returnCode})`);
             }
           }
 
           // 2. PUBLISH (Type 3)
           else if (packetType === 3) {
             let offset = 1;
-            // Decode remaining length
             while (offset < bytes.length && (bytes[offset] & 0x80) !== 0) {
               offset++;
             }
-            offset++; // Maju setelah remaining length
+            offset++;
 
             if (offset + 2 > bytes.length) return;
             const topicLen = (bytes[offset] << 8) | bytes[offset + 1];
@@ -408,25 +370,17 @@ class MQTTService {
 
             this.handleIncomingPublish(topic, payloadStr);
           }
-
-          // 3. PINGRESP (Type 13)
-          else if (packetType === 13) {
-            // Heartbeat OK
-          }
         } catch (e) {
           this.addLog(`[MQTT Parse Error] ${String(e)}`);
         }
       };
 
       this.ws.onerror = (e: any) => {
-        this.addLog(`[MQTT Sinyal Gagal] Tidak dapat terhubung ke broker: ${e?.message || 'Koneksi Ditolak'}`);
+        this.addLog(`[MQTT Error] Gagal terhubung ke broker.`);
         this.setConnected(false);
       };
 
       this.ws.onclose = () => {
-        if (this.isConnected) {
-          this.addLog('[MQTT] Koneksi terputus. Mencoba reconnect otomatis dalam 5 detik...');
-        }
         this.setConnected(false);
         if (this.isConfigured() && !this.reconnectTimer) {
           this.reconnectTimer = setTimeout(() => {
@@ -436,50 +390,65 @@ class MQTTService {
         }
       };
     } catch (err) {
-      this.addLog(`[MQTT Exception] Gagal membuka WebSocket: ${String(err)}`);
+      this.addLog(`[MQTT Exception] ${String(err)}`);
       this.setConnected(false);
     }
   }
 
   private handleIncomingPublish(topic: string, payloadStr: string) {
     try {
-      this.addLog(`[MQTT RECV] [${topic}] ${payloadStr}`);
       const data = JSON.parse(payloadStr);
-
       const topicStatus = this.getTopicStatus();
       const topicWake = this.getTopicWake();
+      const topicControl = this.getTopicControl();
+      const topicGateway = this.getTopicGateway();
+      const topicAck = this.getTopicAck();
 
+      // Status PC
       if (topic === topicStatus) {
         if (data && data.state) {
           this.updateStatus(data.state as PCStatus, data);
         }
-      } else if (topic === topicWake) {
-        this.addLog(`[WAKE Sinyal Diterima] Membangunkan target: ${data.targetMac || this.config.macAddress}`);
-        this.wakeListeners.forEach((listener) =>
-          listener({
+      }
+      // Sinyal Wake (Diterima oleh HP Kedua Gateway)
+      else if (topic === topicWake) {
+        this.addLog(`[WAKE DITERIMA] Membangunkan: ${data.targetMac || this.config.macAddress}`);
+        this.wakeListeners.forEach((l) =>
+          l({
             targetMac: data.targetMac || this.config.macAddress,
             broadcastIp: data.broadcastIp || this.config.broadcastIp,
           })
         );
       }
-    } catch {
-      // Raw string
-    }
+      // Perintah Kontrol Daya (Diterima oleh HP Kedua atau PC)
+      else if (topic === topicControl) {
+        if (data && data.action) {
+          this.controlListeners.forEach((l) => l(data.action, data));
+        }
+      }
+      // Gateway Heartbeat dari HP Kedua
+      else if (topic === topicGateway) {
+        const alive = data.state === 'ACTIVE';
+        this.isGatewayAlive = alive;
+        this.gatewayListeners.forEach((l) => l(alive, data.pcStatus));
+        if (data.pcStatus) {
+          this.updateStatus(data.pcStatus);
+        }
+      }
+      // ACK Laporan
+      else if (topic === topicAck) {
+        this.ackListeners.forEach((l) => l(data));
+      }
+    } catch {}
   }
 
+  // HP Utama -> Kirim sinyal bangun ke Gateway
   public sendWakeCommand(): Promise<boolean> {
     return new Promise((resolve) => {
-      if (!this.isConfigured()) {
-        this.addLog('[ERROR] Tidak dapat mengirim WAKE: Konfigurasi stasiun belum diisi!');
+      if (!this.isConnected) {
         resolve(false);
         return;
       }
-      if (!this.isConnected || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
-        this.addLog('[ERROR] Tidak dapat mengirim WAKE: Belum terhubung ke Cloud Broker!');
-        resolve(false);
-        return;
-      }
-
       const topic = this.getTopicWake();
       const payload = JSON.stringify({
         action: 'wake',
@@ -488,65 +457,91 @@ class MQTTService {
         stationKey: this.config.stationKey,
         timestamp: Math.floor(Date.now() / 1000),
       });
-
-      try {
-        const packet = buildPublishPacket(topic, payload);
-        const ok = this.sendPacket(packet);
-        if (ok) {
-          this.addLog(`[WAKE TERKIRIM] Berhasil broadcast sinyal WAKE ke stasiun ${this.config.stationKey}`);
-          resolve(true);
-        } else {
-          this.addLog('[ERROR WAKE] Gagal mengirim paket melalui socket');
-          resolve(false);
-        }
-      } catch (e) {
-        this.addLog(`[ERROR WAKE] Gagal mengirim paket: ${String(e)}`);
-        resolve(false);
-      }
+      const ok = this.sendPacket(buildPublishPacket(topic, payload));
+      resolve(ok);
     });
   }
 
+  // HP Utama -> Kirim perintah daya (Sleep, Restart, Shutdown, Lock)
   public sendPowerAction(action: PowerAction): Promise<boolean> {
     return new Promise((resolve) => {
-      if (!this.isConfigured()) {
-        this.addLog(`[ERROR] Tidak dapat mengirim ${action.toUpperCase()}: Konfigurasi stasiun belum diisi!`);
+      if (!this.isConnected) {
         resolve(false);
         return;
       }
-      if (!this.isConnected || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
-        this.addLog(`[ERROR] Tidak dapat mengirim ${action.toUpperCase()}: Belum terhubung ke Cloud Broker!`);
-        resolve(false);
-        return;
-      }
-
       const topic = this.getTopicControl();
-      const upperAction = action.toUpperCase();
+      const upper = action.toUpperCase();
       const payload = JSON.stringify({
-        action: upperAction,
+        action: upper,
+        mac: this.config.macAddress,
         stationKey: this.config.stationKey,
         timestamp: Math.floor(Date.now() / 1000),
       });
+      const ok = this.sendPacket(buildPublishPacket(topic, payload));
+      resolve(ok);
+    });
+  }
 
-      try {
-        const packet = buildPublishPacket(topic, payload);
-        const ok = this.sendPacket(packet);
-        if (ok) {
-          this.addLog(`[KONTROL TERKIRIM] Perintah ${upperAction} dikirim ke stasiun ${this.config.stationKey}`);
-          resolve(true);
-        } else {
-          this.addLog(`[ERROR KONTROL] Gagal mengirim ${upperAction}`);
-          resolve(false);
-        }
-      } catch (e) {
-        this.addLog(`[ERROR KONTROL] Gagal mengirim perintah: ${String(e)}`);
+  // HP Kedua -> Publikasikan Laporan Status Fisik PC ke HP Utama
+  public publishPcStatus(status: PCStatus): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (!this.isConnected) {
         resolve(false);
+        return;
       }
+      const topic = this.getTopicStatus();
+      const payload = JSON.stringify({
+        state: status,
+        stationKey: this.config.stationKey,
+        source: 'HOME_GATEWAY_RELAY',
+        timestamp: Math.floor(Date.now() / 1000),
+      });
+      const ok = this.sendPacket(buildPublishPacket(topic, payload, true));
+      resolve(ok);
+    });
+  }
+
+  // HP Kedua -> Publikasikan ACK saat Magic Packet ditembakkan
+  public publishWakeAck(info: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (!this.isConnected) {
+        resolve(false);
+        return;
+      }
+      const topic = this.getTopicAck();
+      const payload = JSON.stringify({
+        event: 'WAKE_FIRED_BY_GATEWAY',
+        message: info,
+        stationKey: this.config.stationKey,
+        timestamp: Math.floor(Date.now() / 1000),
+      });
+      const ok = this.sendPacket(buildPublishPacket(topic, payload));
+      resolve(ok);
+    });
+  }
+
+  // HP Kedua -> Detak Jantung Gateway 24/7
+  public publishGatewayHeartbeat(alive: boolean, pcStatus: PCStatus): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (!this.isConnected) {
+        resolve(false);
+        return;
+      }
+      const topic = this.getTopicGateway();
+      const payload = JSON.stringify({
+        state: alive ? 'ACTIVE' : 'OFFLINE',
+        pcStatus: pcStatus,
+        stationKey: this.config.stationKey,
+        timestamp: Math.floor(Date.now() / 1000),
+      });
+      const ok = this.sendPacket(buildPublishPacket(topic, payload, true));
+      resolve(ok);
     });
   }
 
   public updateStatus(newStatus: PCStatus, rawData?: any) {
     this.currentStatus = newStatus;
-    this.statusListeners.forEach((listener) => listener(newStatus, rawData));
+    this.statusListeners.forEach((l) => l(newStatus, rawData));
   }
 
   public onStatusChange(callback: (status: PCStatus, rawData?: any) => void) {
@@ -561,6 +556,28 @@ class MQTTService {
     this.wakeListeners.push(callback);
     return () => {
       this.wakeListeners = this.wakeListeners.filter((cb) => cb !== callback);
+    };
+  }
+
+  public onControlReceived(callback: (action: string, rawData?: any) => void) {
+    this.controlListeners.push(callback);
+    return () => {
+      this.controlListeners = this.controlListeners.filter((cb) => cb !== callback);
+    };
+  }
+
+  public onGatewayStatus(callback: (alive: boolean, pcStatus?: PCStatus) => void) {
+    this.gatewayListeners.push(callback);
+    callback(this.isGatewayAlive, this.currentStatus);
+    return () => {
+      this.gatewayListeners = this.gatewayListeners.filter((cb) => cb !== callback);
+    };
+  }
+
+  public onAckReceived(callback: (ackData: any) => void) {
+    this.ackListeners.push(callback);
+    return () => {
+      this.ackListeners = this.ackListeners.filter((cb) => cb !== callback);
     };
   }
 
@@ -586,12 +603,15 @@ class MQTTService {
 
   private addLog(log: string) {
     const time = new Date().toLocaleTimeString('id-ID', { hour12: false });
-    const formatted = `[${time}] ${log}`;
-    this.logListeners.forEach((cb) => cb(formatted));
+    this.logListeners.forEach((cb) => cb(`[${time}] ${log}`));
   }
 
   public getIsConnected() {
     return this.isConnected;
+  }
+
+  public getIsGatewayAlive() {
+    return this.isGatewayAlive;
   }
 }
 
